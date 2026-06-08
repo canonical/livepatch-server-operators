@@ -28,7 +28,7 @@ parts:
     - urllib3==2.6.3
     override-build: |
       # 1. Install yq
-      sudo snap install yq
+      snap install yq
 
       # 2. Run the default charm build steps.
       craftctl default
