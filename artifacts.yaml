@@ -1,0 +1,15 @@
+# Copyright 2025 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+version: 1
+charms:
+- name: canonical-livepatch-server-k8s
+  charmcraft-yaml: livepatch-k8s-operator/charmcraft.yaml
+  pack-dir: .
+  platforms:
+  - arch: amd64
+- name: canonical-livepatch-server
+  charmcraft-yaml: livepatch-machine-operator/charmcraft.yaml
+  pack-dir: .
+  platforms:
+  - arch: amd64
