@@ -24,9 +24,6 @@ bases:
           - amd64
 parts:
   charm:
-    charm-strict-dependencies: true
-    requirements:
-      - livepatch-machine-operator/requirements.txt
     charm-binary-python-packages:
       - anyio
       - bcrypt
