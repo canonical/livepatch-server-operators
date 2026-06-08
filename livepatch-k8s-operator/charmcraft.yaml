@@ -1,0 +1,33 @@
+# Copyright 2024 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+# Learn more about charmcraft.yaml configuration at:
+# https://juju.is/docs/sdk/charmcraft-config
+type: "charm"
+base: ubuntu@22.04
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+parts:
+  charm:
+    build-packages: [git, gawk]
+    charm-python-packages: 
+    - setuptools==78.1.1
+    - pip==23.2.1
+    charm-binary-python-packages:
+    - cosl==1.4.0
+    - ops==3.5.0
+    - ops-lib-pgsql==1.4
+    - requests==2.32.5
+    - responses==0.25.8
+    - urllib3==2.6.3
+    override-build: |
+      # 1. Install yq
+      sudo snap install yq
+
+      # 2. Run the default charm build steps.
+      craftctl default
+
+      # 3. Get the image version and store it in the version file to be picked up by Juju.
+      yq -r 'to_entries[] | select(.key == "resources") | .value[] | .["upstream-source"]? ' metadata.yaml | awk '{ match($0, /v[0-9]+(\.[0-9]+)*/, m); print m[0] }' | head -n1 > $CRAFT_PART_INSTALL/version

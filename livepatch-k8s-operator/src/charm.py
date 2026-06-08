@@ -1,0 +1,1033 @@
+#!/usr/bin/env python3
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+# pylint: disable=too-many-lines
+# Learn more at: https://juju.is/docs/sdk
+
+"""Livepatch k8s charm."""
+
+import pathlib
+from base64 import b64decode
+from typing import Dict, Optional
+from urllib.parse import ParseResult, urlunparse
+
+import pgsql
+import yaml
+from charms.data_platform_libs.v0.data_interfaces import DatabaseRequires
+from charms.grafana_k8s.v0.grafana_dashboard import GrafanaDashboardProvider
+from charms.loki_k8s.v1.loki_push_api import LogForwarder, LogProxyConsumer
+from charms.nginx_ingress_integrator.v0.nginx_route import require_nginx_route
+from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointProvider
+from charms.traefik_k8s.v2.ingress import IngressPerAppRequirer
+from ops import pebble
+from ops.charm import ActionEvent, CharmBase, HookEvent, RelationChangedEvent, RelationDepartedEvent, RelationEvent
+from ops.main import main
+from ops.model import ActiveStatus, BlockedStatus, Container, ModelError, RelationDataContent, WaitingStatus
+
+import utils
+from constants import LOGGER, SCHEMA_UPGRADE_CONTAINER, WORKLOAD_CONTAINER
+from legacy_constants import map_old_config_to_new_config
+from log_redactor import setup_log_redaction
+from state import State
+
+SERVER_PORT = 8080
+DATABASE_NAME = "livepatch-server"
+METRICS_DB_NAME = "livepatch-metrics-db"
+LOG_FILE = "/var/log/livepatch"
+LOGROTATE_CONFIG_PATH = "/etc/logrotate.d/livepatch"
+LIVEPATCH_SERVICE_NAME = "livepatch"
+
+DATABASE_RELATION = "database"
+DATABASE_RELATION_LEGACY = "database-legacy"
+PRO_AIRGAPPED_SERVER_RELATION = "pro-airgapped-server"
+CVE_CATALOG_RELATION = "cve-catalog"
+METRICS_DB_RELATION = "metrics-db"
+
+REQUIRED_SETTINGS = {
+    "server.url-template": "✘ server.url-template config not set",
+}
+ON_PREM_REQUIRED_SETTINGS: Dict[str, str] = {}
+# Template for storing trusted certificate in a file.
+TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt"
+
+
+class DeferError(Exception):
+    """An exception that indicates the event should be deferred."""
+
+
+class LivepatchCharm(CharmBase):
+    """The livepatch k8s charm."""
+
+    def __init__(self, *args):
+        """Init function."""
+        super().__init__(*args)
+        setup_log_redaction()
+
+        self._state = State(self.app, lambda: self.model.get_relation("livepatch"))
+
+        # cache ingress type so we can make update_ingress_method idempotent.
+        self._configured_ingress = None
+
+        self.framework.observe(self.on.livepatch_relation_changed, self.on_peer_relation_changed)
+        self.framework.observe(self.on.config_changed, self.on_config_changed)
+        self.framework.observe(self.on.update_status, self.on_update_status)
+        self.framework.observe(self.on.leader_elected, self.on_leader_elected)
+        self.framework.observe(self.on.livepatch_pebble_ready, self.on_pebble_ready)
+        self.framework.observe(self.on.start, self.on_start)
+        self.framework.observe(self.on.stop, self.on_stop)
+
+        self.framework.observe(self.on.restart_action, self.restart_action)
+        self.framework.observe(self.on.schema_upgrade_action, self.schema_upgrade_action)
+        self.framework.observe(self.on.schema_version_action, self.schema_version_check_action)
+
+        self.framework.observe(self.on.get_resource_token_action, self.get_resource_token_action)
+
+        self.framework.observe(self.on.emit_updated_config_action, self.emit_updated_config_action)
+        # Legacy database support
+        self.legacy_db = pgsql.PostgreSQLClient(self, DATABASE_RELATION_LEGACY)
+        self.framework.observe(
+            self.legacy_db.on.database_relation_joined,
+            self._on_legacy_db_relation_joined,
+        )
+        self.framework.observe(self.legacy_db.on.master_changed, self._on_legacy_db_master_changed)
+        self.framework.observe(self.legacy_db.on.standby_changed, self._on_legacy_db_standby_changed)
+        self.framework.observe(
+            self.on.database_legacy_relation_broken,
+            self._on_database_legacy_relation_broken,
+        )
+
+        # Database
+        self.database = DatabaseRequires(
+            self,
+            relation_name=DATABASE_RELATION,
+            database_name=DATABASE_NAME,
+        )
+        self.framework.observe(self.database.on.database_created, self._on_database_event)
+
+        self.framework.observe(
+            self.database.on.endpoints_changed,
+            self._on_database_event,
+        )
+        self.framework.observe(
+            self.on.database_relation_changed,
+            self._on_database_event,
+        )
+
+        self.framework.observe(
+            self.on.database_relation_broken,
+            self._on_database_relation_broken,
+        )
+
+        # MetricsDB
+        self.metrics_db = DatabaseRequires(
+            self,
+            relation_name=METRICS_DB_RELATION,
+            database_name=METRICS_DB_NAME,
+        )
+        self.framework.observe(self.metrics_db.on.database_created, self._on_metrics_db_event)
+
+        self.framework.observe(
+            self.metrics_db.on.endpoints_changed,
+            self._on_metrics_db_event,
+        )
+        self.framework.observe(
+            self.on.metrics_db_relation_changed,
+            self._on_metrics_db_event,
+        )
+        self.framework.observe(
+            self.on.metrics_db_relation_broken,
+            self._on_metrics_db_relation_broken,
+        )
+
+        # Air-gapped pro/contracts
+        self.framework.observe(
+            self.on.pro_airgapped_server_relation_changed, self._on_pro_airgapped_server_relation_changed
+        )
+        self.framework.observe(
+            self.on.pro_airgapped_server_relation_departed, self._on_pro_airgapped_server_relation_departed
+        )
+
+        # Livepatch CVE service
+        self.framework.observe(self.on.cve_catalog_relation_changed, self._on_cve_catalog_relation_changed)
+        self.framework.observe(self.on.cve_catalog_relation_broken, self._on_cve_catalog_relation_broken)
+
+        self._update_ingress_method()
+
+        # Loki log-proxy relation (for Juju < 3.4)
+        self._log_proxy = LogProxyConsumer(
+            self,
+            logs_scheme={
+                WORKLOAD_CONTAINER: {"log-files": [LOG_FILE]},
+            },
+            relation_name="log-proxy",
+            promtail_resource_name="promtail-bin",
+        )
+
+        # Loki log-forwarding relation (for Juju >= 3.4)
+        self._log_forwarder = LogForwarder(
+            self,
+            relation_name="logging",
+        )
+
+        # Prometheus metrics endpoint relation
+        self.metrics_endpoint = MetricsEndpointProvider(
+            self,
+            jobs=[{"static_configs": [{"targets": [f"*:{SERVER_PORT}"]}]}],
+            refresh_event=self.on.config_changed,
+            relation_name="metrics-endpoint",
+        )
+
+        # Grafana dashboard relation
+        self._grafana_dashboards = GrafanaDashboardProvider(self, relation_name="grafana-dashboard")
+
+    def on_peer_relation_changed(self, event):
+        """
+        On peer relation changed hook.
+
+        This hook is for the non-leader units to get notified when the state
+        changes. On the leader unit this hook should be ignored to avoid
+        repetitive workload restarts while handling relations. This also means,
+        on the leader unit, whenever the state changes, the update workload
+        method should be called manually.
+        """
+        if self.unit.is_leader():
+            return
+        if not self._state.is_ready():
+            LOGGER.warning("State is not ready")
+            return
+        self._update_workload_container_config(event)
+
+    def on_config_changed(self, event):
+        """On config changed hook, which runs first."""
+        self._update_ingress_method()
+        self._update_workload_container_config(event)
+
+    def on_start(self, event):
+        """On start hook, which runs after the on-config-changed hook."""
+        self._update_workload_container_config(event)
+
+    # Runs third and on any container restarts & does not guarantee the container is "still up"
+    # Runs additionally when; a new unit is created, and upgrade-charm has been run
+    def on_pebble_ready(self, event):
+        """On pebble ready hook, which runs after the on-start hook."""
+        self._update_workload_container_config(event)
+
+    def on_update_status(self, event):
+        """On update status."""
+        workload = self.unit.get_container(WORKLOAD_CONTAINER)
+        self._ready(workload)
+
+    # Runs AFTER peer-relation-created
+    # When a leader loses leadership it only sees the leader-settings-changed
+    # As such you will only receive this even if YOU ARE the CURRENT leader (so no need to check)
+    def on_leader_elected(self, event):
+        """Run after the leader is elected."""
+        self._update_workload_container_config(event)
+
+    def on_stop(self, _):
+        """On stop hook."""
+        self._stop_service()
+
+    def _get_schema_upgrade_targets(self) -> Dict[str, str]:
+        """Return database targets that require schema checks/upgrades."""
+        targets: Dict[str, str] = {}
+
+        if self._state.dsn:
+            targets["primary"] = self._state.dsn
+
+        if self._state.dsn_metrics:
+            targets["timescale"] = self._state.dsn_metrics
+
+        return targets
+
+    def handle_schema_upgrade(self):
+        """Check if a schema upgrade is required, and perform it."""
+        targets = self._get_schema_upgrade_targets()
+        dsn = targets.get("primary")
+        if not dsn:
+            LOGGER.info("waiting for PG connection string")
+            self.unit.status = BlockedStatus("Waiting for postgres relation to be established.")
+            raise DeferError()
+
+        schema_container = self.unit.get_container(SCHEMA_UPGRADE_CONTAINER)
+        if not schema_container.can_connect():
+            LOGGER.error("cannot connect to the schema update container")
+            self.unit.status = WaitingStatus("Waiting to connect - schema container.")
+            raise DeferError
+
+        for db_name, conn_str in targets.items():
+            upgrade_required = False
+            try:
+                upgrade_required = self.migration_is_required(schema_container, conn_str)
+            except Exception as e:
+                LOGGER.error(f"Failed to determine if schema upgrade required for {db_name}: {e}")
+
+            if upgrade_required:
+                try:
+                    self.schema_upgrade(schema_container, conn_str)
+                except Exception as e:
+                    LOGGER.error(f"Failed to perform schema upgrade for {db_name}: {e}")
+
+    def get_env_vars(self) -> dict:
+        """Map config to env vars and return a processed dict."""
+        env_vars = utils.map_config_to_env_vars(self)
+
+        env_vars["LIVEPATCH_CONFIG_LOCATION"] = "/etc/livepatch.yaml"
+
+        # Applying `pro-airgapped-server` integration, if any.
+        airgapped_pro_address = self._get_available_pro_airgapped_server_address()
+        if airgapped_pro_address:
+            env_vars["LP_CONTRACTS_ENABLED"] = True
+            env_vars["LP_CONTRACTS_URL"] = airgapped_pro_address
+            # if sync-token is not provided we disable the syncing in airgapped env.
+            # the sync could be enabled when chaining multiple machines in an airgapped env.
+            if not self.config.get("patch-sync.token"):
+                env_vars["LP_PATCH_SYNC_ENABLED"] = False
+        else:
+            if not self.config.get("patch-sync.token"):
+                env_vars["LP_PATCH_SYNC_TOKEN"] = self._state.resource_token
+            if self.config.get("patch-sync.enabled") is True:
+                # TODO: Find a better way to identify a on-prem syncing instance.
+                env_vars["LP_PATCH_SYNC_ID"] = self.model.uuid
+
+        cve_service_address = self._get_available_cve_service()
+        if cve_service_address and self.unit.is_leader():
+            # Note that other env vars are already set from the configuration.
+            env_vars["LP_CVE_SYNC_SOURCE_URL"] = cve_service_address
+            env_vars["LP_LSN_SYNC_SOURCE_URL"] = cve_service_address
+
+        # Some extra config and checks
+        env_vars["LP_DATABASE_CONNECTION_STRING"] = self._state.dsn
+        env_vars["LP_SERVER_SERVER_ADDRESS"] = f":{SERVER_PORT}"
+
+        if self.config.get("patch-storage.type") == "postgres":
+            postgres_patch_storage_dsn = (
+                self.config.get("patch-storage.postgres-connection-string", "") or self._state.dsn
+            )
+            env_vars["LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"] = postgres_patch_storage_dsn
+
+        # remove empty environment values
+        env_vars = {key: value for key, value in env_vars.items() if value != "" and value is not None}
+
+        # Keys that must be explicitly set even when empty, to override previous Pebble layer values.
+        explicit_keys = {"LP_CVE_SYNC_SOURCE_URL", "LP_LSN_SYNC_SOURCE_URL"}
+        # Set keys to empty string if they are not already set.
+        for key in explicit_keys:
+            env_vars.setdefault(key, "")
+
+        return env_vars
+
+    def _update_workload_version(self):
+        """Update the workload version. Version will be present in the Version column when running juju status."""
+        charm_file = pathlib.Path("version")
+        raw_version = charm_file.read_text(encoding="utf-8")
+        version = raw_version.strip()
+        self.unit.set_workload_version(version)
+
+    def _update_ingress_method(self):
+        """Update the ingress interface based on the config."""
+        ingress_method = self.config.get("ingress-interface")
+
+        # Keep backwards compatibility: default to legacy-nginx-route when not configured.
+        # legacy-nginx-route is legacy; ingress is preferred for new deployments.
+        # This operation is idempotent, so it will not cause issues if called
+        # multiple times during the charm lifecycle, such as on config changes
+        # or leader election.
+        if ingress_method == "legacy-nginx-route":
+            LOGGER.info("Ingress interface specified as legacy-nginx-route")
+
+            if not self._configured_ingress or self._configured_ingress != "legacy-nginx-route":
+                self.ingress = require_nginx_route(
+                    charm=self,
+                    service_hostname=self.app.name,
+                    service_name=self.app.name,
+                    service_port=SERVER_PORT,
+                )
+                self._configured_ingress = "legacy-nginx-route"
+
+        elif ingress_method == "ingress":
+            LOGGER.info("Ingress interface specified as ingress")
+            if not self._configured_ingress or self._configured_ingress != "ingress":
+                self.ingress = IngressPerAppRequirer(
+                    charm=self,
+                    relation_name="ingress",
+                    port=SERVER_PORT,
+                )
+                self._configured_ingress = "ingress"
+        else:
+            error_msg = f"Invalid ingress interface specified: {ingress_method}"
+            LOGGER.error(error_msg)
+            self._configured_ingress = None
+            self.ingress = None
+            self.unit.status = BlockedStatus(error_msg)
+
+    def _update_workload_container_config(self, event: Optional[HookEvent]):
+        """
+        Update workload with all available configuration data.
+
+        Note that given event should be deferrable. For example, action events
+        (of type ActionEvent), will raise exception if their `defer` method is
+        invoked. So, the caller of this method should pass event as None if it's
+        not a deferrable event.
+        """
+        if not self._state.is_ready():
+            self._defer(event)
+            LOGGER.warning("State is not ready")
+            return
+
+        # update version
+        self._update_workload_version()
+
+        workload_container = self.unit.get_container(WORKLOAD_CONTAINER)
+        if not workload_container.can_connect():
+            LOGGER.info("workload container not ready - deferring")
+            self.unit.status = WaitingStatus("Waiting to connect - workload container")
+            self._defer(event)
+            return
+
+        # Quickly update logrotates config each workload update
+        self._push_to_workload(LOGROTATE_CONFIG_PATH, self._get_logrotate_config(), event)
+
+        try:
+            self.handle_schema_upgrade()
+        except DeferError:
+            self._defer(event)
+            return
+
+        # This token comes from an action rather than config so we check for it specifically.
+        if not self.config.get("server.is-hosted"):
+            is_airgapped = self._get_available_pro_airgapped_server_address() is not None
+            # blocked status if not airgapped, no resource token in the state and no sync token in the config
+            if not is_airgapped and not self._state.resource_token and not self.config.get("patch-sync.token"):
+                error_msg = "✘ patch-sync token not set, run get-resource-token action"
+                self.unit.status = BlockedStatus(error_msg)
+                LOGGER.warning(error_msg)
+                return
+
+        # Then check for required config values.
+        required_settings = REQUIRED_SETTINGS.copy()
+        if self.config.get("server.is-hosted"):
+            required_settings.update(ON_PREM_REQUIRED_SETTINGS)
+
+        for setting, error_msg in required_settings.items():
+            if not self.config.get(setting):
+                self.unit.status = BlockedStatus(error_msg)
+                LOGGER.warning(error_msg)
+                return
+
+        update_config_environment_layer = {
+            "services": {
+                LIVEPATCH_SERVICE_NAME: {
+                    "summary": "Livepatch Service",
+                    "description": "Pebble config layer for livepatch",
+                    "override": "merge",
+                    "startup": "disabled",
+                    "command": "sh -c '/usr/local/bin/livepatch-server | tee /var/log/livepatch'",
+                    "environment": self.get_env_vars(),
+                },
+            },
+            "checks": {
+                "livepatch-check": {
+                    "override": "replace",
+                    "period": "1m",
+                    "http": {"url": f"http://localhost:{SERVER_PORT}/debug/info"},
+                }
+            },
+        }
+        layer_label = "livepatch"
+        self._update_trusted_ca_certs(workload_container)
+        workload_container.add_layer(layer_label, update_config_environment_layer, combine=True)
+        self._start_or_restart_service(workload_container)
+
+    def _start_or_restart_service(self, workload_container):
+        if self._ready(workload_container):
+            if workload_container.get_service(LIVEPATCH_SERVICE_NAME).is_running():
+                workload_container.restart(LIVEPATCH_SERVICE_NAME)
+            else:
+                LOGGER.info("Starting Livepatch services")
+                workload_container.start(LIVEPATCH_SERVICE_NAME)
+        else:
+            self.unit.status = WaitingStatus("Service is not ready")
+            return
+
+        self.unit.status = ActiveStatus()
+
+    def _ready(self, workload_container):
+        if workload_container.can_connect():
+            plan = workload_container.get_plan()
+            if plan.services.get(LIVEPATCH_SERVICE_NAME) is None:
+                LOGGER.info("livepatch service is not ready yet")
+                return False
+            if workload_container.get_service(LIVEPATCH_SERVICE_NAME).is_running():
+                self.unit.status = ActiveStatus()
+            return True
+
+        LOGGER.error("cannot connect to workload container")
+        return False
+
+    # Legacy database relation
+
+    def _on_legacy_db_relation_joined(self, event: pgsql.DatabaseRelationJoinedEvent) -> None:
+        """
+        Handle determining if the database (on legacy database relation) has finished setup.
+
+        once setup is complete a primary/standby may join / change in consequent events.
+        """
+        if not self._state.is_ready():
+            event.defer()
+            LOGGER.warning("State is not ready")
+            return
+
+        LOGGER.info("(postgresql, legacy database relation) RELATION_JOINED event fired.")
+
+        LOGGER.warning(
+            f"`{DATABASE_RELATION_LEGACY}` is a legacy relation; try integrating with `{DATABASE_RELATION}` instead."
+        )
+
+        if self.model.unit.is_leader():
+            if self._is_database_relation_activated():
+                LOGGER.error(f"The `{DATABASE_RELATION}` relation is already integrated.")
+                raise RuntimeError(
+                    "Integration with both database relations is not allowed; "
+                    f"`{DATABASE_RELATION}` is already activated."
+                )
+            event.database = DATABASE_NAME
+        elif event.database != DATABASE_NAME:
+            event.defer()
+
+    def _on_legacy_db_master_changed(self, event: pgsql.MasterChangedEvent) -> None:
+        """
+        Handle primary units of postgres joining / changing (for the legacy database relation).
+
+        The internal snap configuration is updated to reflect this.
+        """
+        if not self._state.is_ready():
+            event.defer()
+            LOGGER.warning("State is not ready")
+            return
+
+        LOGGER.info("(postgresql, legacy database relation) MASTER_CHANGED event fired.")
+
+        if event.database != DATABASE_NAME:
+            LOGGER.debug("(legacy database relation) Database setup not complete yet, returning.")
+            return
+
+        if self.model.unit.is_leader():
+            self.set_status_and_log(
+                "(legacy database relation) Updating application database connection...", WaitingStatus
+            )
+            # wokeignore:rule=master
+            if event.master is not None:
+                # Note (babakks): The split is mainly to drop query parameters that may cause further database
+                # connection errors. For example, there's this query parameters, named `fallback_application_name`,
+                # which causes the schema upgrade command to return `unrecognized configuration parameter
+                # "fallback_application_name" (SQLSTATE 42704)`.
+                # wokeignore:rule=master
+                db_uri = event.master.uri.split("?", 1)[0]
+                self._state.dsn = db_uri
+
+        self._update_workload_container_config(event)
+
+    def _on_legacy_db_standby_changed(self, event: pgsql.StandbyChangedEvent):
+        LOGGER.info("(postgresql, legacy database relation) STANDBY_CHANGED event fired.")
+        # NOTE NOTE NOTE
+        # This should be used for non-primary on-prem instances when configuring
+        # additional livepatch instances, enabling us to read from standbys
+        if event.database != DATABASE_NAME:
+            # Leader has not yet set requirements. Wait until next event,
+            # or risk connecting to an incorrect database.
+            return
+        # If read only replicas are desired, these urls should be added to
+        # the peer relation e.g. peer = `[c.uri for c in event.standbys]`
+        return
+
+    def _stop_service(self) -> None:
+        """Stop the service without attempting to restart."""
+        container = self.unit.get_container(WORKLOAD_CONTAINER)
+        if container.can_connect():
+            try:
+                service = container.get_service(LIVEPATCH_SERVICE_NAME)
+            except ModelError:
+                LOGGER.debug("Attempted to stop service but it was not found in the container")
+                return
+            if service.is_running():
+                LOGGER.info("Stopping livepatch service")
+                container.stop(LIVEPATCH_SERVICE_NAME)
+            self.unit.status = WaitingStatus("service stopped")
+        else:
+            LOGGER.info("workload container not ready when trying to stop service")
+
+    def _clear_db_connection(self) -> None:
+        LOGGER.info("Clearing database connection string from state")
+        if self.unit.is_leader() and self._state.is_ready():
+            self._state.dsn = None
+
+    def _on_database_legacy_relation_broken(self, event: RelationEvent) -> None:
+        """Handle database-legacy relation broken event."""
+        LOGGER.info("(postgresql, legacy database relation) RELATION_BROKEN event fired.")
+        self._stop_service()
+        self._clear_db_connection()
+        self.unit.status = BlockedStatus("Database connection removed")
+
+    # Database
+
+    def _is_legacy_database_relation_activated(self) -> bool:
+        return len(self.model.relations[DATABASE_RELATION_LEGACY]) > 0
+
+    def _is_database_relation_activated(self) -> bool:
+        return len(self.model.relations[DATABASE_RELATION]) > 0
+
+    def _on_database_event(self, event: RelationEvent) -> None:
+        """Database event handler."""
+        if not self.model.unit.is_leader():
+            return
+
+        LOGGER.info("(postgresql) %s event fired.", event.relation.name)
+
+        if not self._state.is_ready():
+            event.defer()
+            LOGGER.warning("State is not ready")
+            return
+
+        if self._is_legacy_database_relation_activated():
+            LOGGER.error(f"The `{DATABASE_RELATION_LEGACY}` relation is already integrated.")
+            raise RuntimeError(
+                "Integration with both database relations is not allowed; "
+                f"`{DATABASE_RELATION_LEGACY}` is already activated."
+            )
+
+        dbconn = self._get_db_info(self.database)
+        if dbconn is None:
+            LOGGER.info("no database connection info found, deferring event")
+            event.defer()
+            return
+
+        ep = dbconn["endpoint"]
+        user = dbconn["user"]
+        password = dbconn["password"]
+
+        # compose the db connection string
+        uri = f"postgresql://{user}:{password}@{ep}/{DATABASE_NAME}"
+
+        LOGGER.info("received database connection for database: %s", DATABASE_NAME)
+
+        # record the connection string
+        self._state.dsn = uri
+
+        self._update_workload_container_config(event)
+
+    def _get_db_info(self, db_relation) -> Optional[Dict]:
+        """Get database connection info by reading relation data from a given relation object."""
+        if len(db_relation.relations) == 0 or not db_relation.is_resource_created():
+            LOGGER.debug("no (postgresql) database relation found or resource not created")
+            return None
+
+        db_relation_id = db_relation.relations[0].id
+        relation_data = db_relation.fetch_relation_data().get(db_relation_id, None)
+        if not relation_data:
+            LOGGER.debug("no relation data found for relation %s", db_relation_id)
+            return None
+
+        endpoint = relation_data.get("endpoints").split(",")[0]
+        return {
+            "endpoint": endpoint,
+            "password": relation_data.get("password"),
+            "user": relation_data.get("username"),
+        }
+
+    def _on_metrics_db_event(self, event: RelationEvent) -> None:
+        """Metrics database event handler."""
+        if not self.model.unit.is_leader():
+            return
+
+        LOGGER.info("(metrics-db) %s event fired.", event.relation.name)
+
+        if not self._state.is_ready():
+            event.defer()
+            LOGGER.warning("State is not ready")
+            return
+
+        dbconn = self._get_db_info(self.metrics_db)
+        if dbconn is None:
+            LOGGER.info("no database connection info found, deferring event")
+            event.defer()
+            return
+
+        ep = dbconn["endpoint"]
+        user = dbconn["user"]
+        password = dbconn["password"]
+
+        uri = f"postgresql://{user}:{password}@{ep}/{METRICS_DB_NAME}"
+
+        LOGGER.info(f"received database uri for {METRICS_DB_NAME}")
+
+        self._state.dsn_metrics = uri
+
+        self._update_workload_container_config(event)
+
+    def _on_metrics_db_relation_broken(self, event: RelationEvent) -> None:
+        """Handle metrics-db relation broken event."""
+        LOGGER.info("(metrics-db) RELATION_BROKEN event fired.")
+        if self.model.unit.is_leader() and self._state.is_ready():
+            del self._state.dsn_metrics
+        self._update_workload_container_config(event)
+
+    def _on_database_relation_broken(self, event: RelationEvent) -> None:
+        """Handle database relation broken event."""
+        LOGGER.info("(postgresql) RELATION_BROKEN event fired.")
+        self._stop_service()
+        self._clear_db_connection()
+        self.unit.status = BlockedStatus("Database connection removed")
+
+    def _on_pro_airgapped_server_relation_changed(self, event: RelationChangedEvent):
+        """Handle pro-airgapped-server relation-changed event."""
+        self._update_workload_container_config(event)
+
+    def _on_pro_airgapped_server_relation_departed(self, event: RelationDepartedEvent):
+        """Handle pro-airgapped-server relation-departed event."""
+        self._update_workload_container_config(event)
+
+    def _get_available_pro_airgapped_server_address(self) -> Optional[str]:
+        """
+        Return the pro-airgapped-server address, if any, taken from related unit databags.
+
+        The returned value will be the same for all units. This is achieved by iterating over
+        a sorted list of available units.
+        """
+        pro_relations = self.model.relations.get(PRO_AIRGAPPED_SERVER_RELATION, None)
+        if not pro_relations or len(pro_relations) == 0:
+            return None
+        relation = pro_relations[0]
+        sorted_units = sorted(relation.units, key=lambda unit: unit.name)
+        for unit in sorted_units:
+            data = relation.data.get(unit, None)
+            if not data:
+                continue
+            address = self._extract_pro_airgapped_server_address(data)
+            if address:
+                return address
+        return None
+
+    def _extract_pro_airgapped_server_address(self, data: RelationDataContent) -> Optional[str]:
+        """
+        Extract pro-airgapped-server address from given unit databag.
+
+        The method returns None, if data structure is not valid.
+        """
+        hostname = data.get("hostname")
+        if not hostname:
+            LOGGER.error("empty 'hostname' value in pro-airgapped relation data")
+            return None
+
+        scheme = data.get("scheme") or "http"
+        port = data.get("port")
+        netloc = hostname + (f":{port}" if port else "")
+        return urlunparse(ParseResult(scheme, netloc, "", "", "", ""))
+
+    def _on_cve_catalog_relation_changed(self, event: RelationChangedEvent):
+        """Handle cve-catalog relation-changed event."""
+        self._update_workload_container_config(event)
+
+    def _on_cve_catalog_relation_broken(self, event: RelationDepartedEvent):
+        """Handle cve-catalog relation-broken event."""
+        self._update_workload_container_config(event)
+
+    def _get_available_cve_service(self) -> Optional[str]:
+        """Return the Livepatch CVE service address, if any, taken from related app/unit."""
+        relation = self.model.get_relation(CVE_CATALOG_RELATION)
+        if not relation:
+            return None
+
+        address = relation.data.get(relation.app).get("url", "")
+        return address if address else None
+
+    # Actions
+    def restart_action(self, event):
+        """Restart the workload container."""
+        container = self.unit.get_container(WORKLOAD_CONTAINER)
+
+        if container.can_connect():
+            service = None
+            try:
+                service = container.get_service(LIVEPATCH_SERVICE_NAME)
+            except ModelError:
+                pass
+            if service and service.is_running():
+                container.stop(LIVEPATCH_SERVICE_NAME)
+
+        # Action events are not deferrable, so we should pass event as None.
+        self._update_workload_container_config(None)
+
+    def schema_upgrade_action(self, event: ActionEvent):
+        """Run the schema upgrade action."""
+        if not self._state.is_ready():
+            # Note that action events are not deferrable, so we should just return.
+            LOGGER.warning("State is not ready")
+            return
+
+        targets = self._get_schema_upgrade_targets()
+        db_uri = targets.get("primary")
+        container = self.unit.get_container(SCHEMA_UPGRADE_CONTAINER)
+        if not db_uri:
+            LOGGER.error("DB connection string not set")
+            event.fail("schema migration failed: database connection not set/ready")
+            return
+        
+        if self.config.get("timescale_db.enabled"):
+            metrics_db_uri = targets.get("timescale")
+            if not metrics_db_uri:
+                LOGGER.error("Metrics DB connection string not set")
+                event.fail("schema migration failed: metrics database connection not set/ready")
+                return
+
+        if not container.can_connect():
+            LOGGER.error("Cannot connect to the schema upgrade container")
+            event.fail("schema migration failed: cannot connect to schema upgrade container")
+            return
+
+        for db_name, conn_str in targets.items():
+            try:
+                self.schema_upgrade(container, conn_str)
+            except Exception as e:
+                event.fail(f"schema migration failed for {db_name} database: {e}")
+                return
+
+    def schema_upgrade(self, container, conn_str):
+        """
+        Perform a schema upgrade on the configurable database.
+
+        Raise an exception if there is a failure to prevent further charm.
+        hook from firing and prevent more non-leader units from upgrading.
+        """
+        LOGGER.info("Attempting schema upgrade")
+        self.unit.status = WaitingStatus("pg connection successful, attempting upgrade")
+        if not container.exists("/usr/local/bin/livepatch-schema-tool"):
+            LOGGER.error("livepatch-schema-tool not found in the schema upgrade container")
+            raise FileNotFoundError("schema tool not found")
+
+        process = None
+        try:
+            process = container.exec(
+                command=[
+                    "/usr/local/bin/livepatch-schema-tool",
+                    "upgrade",
+                    "--db",
+                    conn_str,
+                ],
+            )
+        except pebble.APIError as e:
+            LOGGER.error(e)
+            LOGGER.error("Schema migration failed")
+            raise e
+
+        try:
+            stdout, _ = process.wait_output()
+            LOGGER.info(stdout)
+            self.unit.status = WaitingStatus("Schema migration done")
+        except pebble.ExecError as e:
+            LOGGER.error(e)
+            LOGGER.error("Exited with code %d. Stderr:", e.exit_code)
+            for line in e.stderr.splitlines():
+                LOGGER.error("    %s", line)
+            LOGGER.error("Schema migration failed - executing migration failed")
+            raise e
+
+    def schema_version_check_action(self, event: ActionEvent):
+        """Check schema version action."""
+        if not self._state.is_ready():
+            # Note that action events are not deferrable, so we should just return.
+            LOGGER.warning("State is not ready")
+            return
+
+        db_uri = self._state.dsn
+        container = self.unit.get_container(SCHEMA_UPGRADE_CONTAINER)
+        if not container.can_connect():
+            LOGGER.error("cannot connect to the schema update container")
+            return
+
+        try:
+            migration_required = self.migration_is_required(container, db_uri)
+            event.set_results({"migration-required": migration_required})
+        except Exception as e:
+            event.fail(f"schema version check failed: {e}")
+
+    def migration_is_required(self, container, conn_str: str) -> bool:
+        """Run a schema version check against the database."""
+        if not container.exists("/usr/local/bin/livepatch-schema-tool"):
+            LOGGER.error("livepatch-schema-tool not found in the schema upgrade container")
+            raise FileNotFoundError("Failed to find schema tool")
+
+        if not conn_str:
+            LOGGER.error("Database connection string not found")
+            raise ValueError("Database connection string is None")
+
+        process = None
+        try:
+            process = container.exec(
+                command=[
+                    "/usr/local/bin/livepatch-schema-tool",
+                    "check",
+                    "--db",
+                    conn_str,
+                ],
+            )
+        except pebble.APIError as e:
+            LOGGER.error(e)
+            raise e
+
+        stdout = None
+        try:
+            stdout, _ = process.wait_output()
+            LOGGER.info("Schema is up to date.")
+            LOGGER.info(stdout)
+            return False
+        except pebble.ExecError as e:
+            LOGGER.info(e.stderr)
+            if e.exit_code == 2:
+                # If command has a non-zero exit code then migrations are pending.
+                LOGGER.info("Migrations pending")
+                return True
+            raise e
+
+    def get_resource_token_action(self, event: ActionEvent):
+        """Retrieve the livepatch resource token from ua-contracts."""
+        if not self.unit.is_leader():
+            LOGGER.error("cannot fetch the resource token: unit is not the leader")
+            event.set_results({"error": "cannot fetch the resource token: unit is not the leader"})
+            return
+
+        if not self._state.is_ready():
+            LOGGER.error("cannot fetch the resource token: peer relation not ready")
+            event.set_results({"error": "cannot fetch the resource token: peer relation not ready"})
+            return
+
+        if self.config.get("patch-sync.token"):
+            LOGGER.error("patch-sync.token is already set. It should be unset before setting a resource token")
+            event.set_results(
+                {"error": "patch-sync.token is already set. It should be unset before setting a resource token"}
+            )
+            return
+
+        # If there already is an integration with the `pro-airgapped-server`
+        # the user shouldn't be able to run this action, unless they remove the
+        # relation.
+        if self._get_available_pro_airgapped_server_address():
+            LOGGER.error(
+                "already integrated with `pro-airgapped-server`. The relation should be removed before setting a resource token"
+            )
+            event.set_results(
+                {
+                    "error": "already integrated with `pro-airgapped-server`. The relation should be removed before setting a resource token"
+                }
+            )
+            return
+
+        contract_token = event.params.get("contract-token", "")
+        if not contract_token:
+            event.set_results({"error": "cannot fetch the resource token: no contract token provided"})
+            return
+        proxies = utils.get_proxy_dict(self.config)
+        contracts_url = self.config.get("contracts.url", "")
+        machine_token = utils.get_machine_token(contract_token, contracts_url=contracts_url, proxies=proxies)
+
+        if not machine_token:
+            LOGGER.error("failed to retrieve the machine token")
+            event.set_results({"error": "cannot fetch the resource token: failed to fetch the machine token"})
+            return
+
+        resource_token = utils.get_resource_token(machine_token, contracts_url=contracts_url, proxies=proxies)
+
+        self._state.resource_token = resource_token
+
+        # Action events are not deferrable, so we should pass event as None.
+        self._update_workload_container_config(None)
+
+        event.set_results({"result": "resource token set"})
+
+    def emit_updated_config_action(self, event: ActionEvent):
+        """Convert a legacy reactive charm config to the current ops charm config."""
+        config_content = event.params["config-file"]
+        try:
+            config_yaml = yaml.safe_load(config_content)
+            if not (isinstance(config_yaml, dict) and config_yaml.keys()):
+                event.fail(f"invalid config file format. Got content {config_content}")
+                return
+        except yaml.YAMLError as e:
+            event.fail(f"Failed to parse YAML: {e}")
+            return
+        try:
+            result = map_old_config_to_new_config(config_yaml)
+        except ValueError as e:
+            event.fail(f"Failed to map old config to new config: {e}")
+            return
+        event.set_results({"result": result})
+
+    def set_status_and_log(self, msg, status) -> None:
+        """Log and set unit status."""
+        LOGGER.info(msg)
+        self.unit.status = status(msg)
+
+    def _get_logrotate_config(self):
+        return f"""{LOG_FILE} {"{"}
+            rotate 3
+            daily
+            compress
+            delaycompress
+            missingok
+            notifempty
+            size 10M
+{"}"}
+"""
+
+    def _push_to_workload(self, filename, content, event: Optional[HookEvent]):
+        """
+        Create file on the workload container with the specified content.
+
+        If the underlying event is not deferrable (e.g., an action event), the
+        caller should pass None as the `event` argument.
+        """
+        container = self.unit.get_container(WORKLOAD_CONTAINER)
+        if container.can_connect():
+            LOGGER.info(f"pushing file {filename} to the workload container")
+            container.push(filename, content, make_dirs=True)
+        else:
+            LOGGER.info("workload container not ready - deferring")
+            self._defer(event)
+
+    def _update_trusted_ca_certs(self, container: Container):
+        """Update trusted CA certificates with the cert from configuration.
+
+        Livepatch needs to restart to use newly received certificates.
+
+        Args:
+            container (Container): The workload container, the caller must ensure that we can connect.
+        """
+        if not self.config.get("contracts.ca"):
+            LOGGER.debug("ca config not set")
+            return
+
+        try:
+            cert = b64decode(self.config.get("contracts.ca")).decode("utf8")
+        except Exception:
+            LOGGER.error("failed to parse base64 value of `contracts.ca` config option")
+            return
+
+        container.push(TRUSTED_CA_FILENAME, cert, make_dirs=True)
+        stdout, stderr = container.exec(["update-ca-certificates", "--fresh"]).wait_output()
+        LOGGER.info("stdout update-ca-certificates: %s", stdout)
+        LOGGER.info("stderr update-ca-certificates: %s", stderr)
+
+    def _defer(self, event: Optional[HookEvent]):
+        """
+        Defer given event object if it's not None.
+
+        This is a helper method to avoid repeating none checks. It should only
+        be used when the event object can be None.
+        """
+        if not event:
+            return
+        event.defer()
+
+
+if __name__ == "__main__":
+    main(LivepatchCharm, use_juju_for_storage=True)
