@@ -40,7 +40,7 @@ integration-suites:
   livepatch-machine-operator/tests/integration/:
     working-dir: livepatch-machine-operator/
     summary: livepatch-machine-operator integration tests
-    systems: [ubuntu-16.04 ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
+    systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
     backends:
     - integration-test
     auto-discover: true
