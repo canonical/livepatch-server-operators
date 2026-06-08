@@ -4,11 +4,15 @@
 # Learn more about charmcraft.yaml configuration at:
 # https://juju.is/docs/sdk/charmcraft-config
 type: "charm"
+name: canonical-livepatch-server-k8s
+summary: Canonical Livepatch Server
+description: |
+  The purpose of the Livepatch Server is to pull in patch updates from
+  Canonical and allow more fine-grained control of patch rollout to the
+  machines running on your infrastructure.
 base: ubuntu@22.04
 platforms:
   amd64:
-    build-on: [amd64]
-    build-for: [amd64]
 parts:
   charm:
     build-packages: [git, gawk]
@@ -22,12 +26,3 @@ parts:
     - requests==2.32.5
     - responses==0.25.8
     - urllib3==2.6.3
-    override-build: |
-      # 1. Install yq
-      sudo snap install yq
-
-      # 2. Run the default charm build steps.
-      craftctl default
-
-      # 3. Get the image version and store it in the version file to be picked up by Juju.
-      yq -r 'to_entries[] | select(.key == "resources") | .value[] | .["upstream-source"]? ' metadata.yaml | awk '{ match($0, /v[0-9]+(\.[0-9]+)*/, m); print m[0] }' | head -n1 > $CRAFT_PART_INSTALL/version

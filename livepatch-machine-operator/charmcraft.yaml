@@ -4,26 +4,26 @@
 # Learn more about charmcraft.yaml configuration at:
 # https://juju.is/docs/sdk/charmcraft-config
 type: "charm"
+name: canonical-livepatch-server
+summary: Canonical Livepatch Server
+description: |
+  The purpose of the Livepatch Server is to pull in patch updates from
+  Canonical and allow more fine-grained control of patch rollout to the
+  machines running on your infrastructure.
 
-# Note that ops 2.0 requires Python 3.8+ which is only shipped on Ubuntu 20.04 and above.
 bases:
   - build-on:
       - name: "ubuntu"
-        channel: "20.04"
+        channel: "22.04"
         architectures:
           - amd64
     run-on:
-      - name: "ubuntu"
-        channel: "20.04"
-        architectures:
-          - amd64
       - name: "ubuntu"
         channel: "22.04"
         architectures:
           - amd64
 parts:
   charm:
-    charm-strict-dependencies: true
     charm-binary-python-packages:
       - anyio
       - bcrypt
