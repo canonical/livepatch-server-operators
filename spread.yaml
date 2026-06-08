@@ -1,0 +1,51 @@
+# Copyright 2025 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+project: livepatch-server-operators
+path: /home/ubuntu/proj
+kill-timeout: 60m
+warn-timeout: 1m
+backends:
+  integration-test:
+    type: integration-test
+    systems:
+    - ubuntu-26.04
+    - ubuntu-24.04
+    - ubuntu-20.04
+    - ubuntu-18.04
+    - ubuntu-16.04
+environment:
+  CONCIERGE: '$(HOST: echo "${CONCIERGE:-concierge-juju3.yaml}")'
+  OPCLI_GIT_REF: '$(HOST: echo "${OPCLI_GIT_REF:-main}")'
+exclude:
+- .git
+- .tox
+- .venv
+- .*_cache
+
+# TODO: rework this once we switch to jubilant 
+integration-suites:
+  livepatch-k8s-operator/tests/integration/:
+    working-dir: livepatch-k8s-operator/
+    summary: livepatch-k8s-operator integration tests
+    systems: [ubuntu-24.04, ubuntu-26.04]
+    backends:
+    - integration-test
+    auto-discover: true
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
+    pytest-environment-template: |
+      {% for build in artifacts.charms[0].builds if build.arch == arch %}
+      CHARM_PATH={{ build.path }}
+      {% endfor %}
+  livepatch-machine-operator/tests/integration/:
+    working-dir: livepatch-machine-operator/
+    summary: livepatch-machine-operator integration tests
+    systems: [ubuntu-16.04 ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
+    backends:
+    - integration-test
+    auto-discover: true
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
+    pytest-environment-template: |
+      {% for build in artifacts.charms[1].builds if build.arch == arch %}
+      CHARM_PATH={{ build.path }}
+      {% endfor %}
