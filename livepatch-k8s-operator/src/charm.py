@@ -23,6 +23,7 @@ from base64 import b64decode
 from urllib.parse import urlparse
 
 import ops
+import ops.pebble
 import paas_charm.app
 import paas_charm.go
 import pgsql
@@ -90,7 +91,7 @@ class LivepatchApp(paas_charm.app.App):
         charm = self._charm  # type: ignore[attr-defined]
 
         lp_env: dict[str, str] = {
-            "LP_" + k.replace(".", "_").upper(): _encode(v)
+            "LP_" + k.replace("-", "_").replace(".", "_").upper(): _encode(v)
             for k, v in self._charm_state.user_defined_config.items()
         }
         lp_env["LP_SERVER_IS_LEADER"] = _encode(charm.unit.is_leader())
@@ -167,6 +168,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         # Cache the configured ingress method so `_update_ingress_method` is
         # idempotent (matches the pre-12-factor charm's behaviour).
         self._configured_ingress: typing.Optional[str] = None
+        self._nginx_route_requirer: typing.Optional[object] = None
         self._update_ingress_method()
         self.framework.observe(self.on.config_changed, self._on_config_changed_ingress)
 
@@ -263,7 +265,11 @@ class LivepatchCharm(paas_charm.go.Charm):
             return
         if self._configured_ingress == "legacy-nginx-route":
             return
-        require_nginx_route(
+        # The returned requirer must be kept alive on the charm instance: the
+        # library's own provider side keeps a reference for the same reason,
+        # and an unreferenced requirer can be garbage-collected before it
+        # finishes handling relation events.
+        self._nginx_route_requirer = require_nginx_route(
             charm=self,
             service_hostname=self.app.name,
             service_name=self.app.name,
@@ -276,10 +282,12 @@ class LivepatchCharm(paas_charm.go.Charm):
     def _on_legacy_db_relation_joined(self, event: pgsql.DatabaseRelationJoinedEvent) -> None:
         """Handle the legacy database relation being joined."""
         if self.model.get_relation("postgresql"):
-            raise RuntimeError(
-                "Integration with both database relations is not allowed; "
-                "`postgresql` is already activated."
+            # Raising here would crash the hook and leave the unit in error;
+            # surface the conflict as a blocked status instead.
+            self.unit.status = ops.BlockedStatus(
+                "cannot relate to both `postgresql` and `database-legacy`; remove one"
             )
+            return
         if self.unit.is_leader():
             event.database = DATABASE_LEGACY_NAME
         elif event.database != DATABASE_LEGACY_NAME:
@@ -311,19 +319,26 @@ class LivepatchCharm(paas_charm.go.Charm):
 
     def _on_legacy_db_relation_broken(self, _: ops.RelationBrokenEvent) -> None:
         """Handle the legacy database relation being broken."""
-        try:
-            secret = self.model.get_secret(label=LEGACY_DB_SECRET_LABEL)
-            secret.remove_all_revisions()
-        except ops.SecretNotFoundError:
-            pass
+        # Only the leader owns (and may remove) this app-owned secret; other
+        # units would fail the removal and could otherwise keep serving a
+        # stale DSN if cleanup errored out.
+        if self.unit.is_leader():
+            try:
+                secret = self.model.get_secret(label=LEGACY_DB_SECRET_LABEL)
+                secret.remove_all_revisions()
+            except ops.SecretNotFoundError:
+                pass
         self.restart()
 
     def legacy_database_connection_string(self) -> typing.Optional[str]:
         """Return the legacy (pgsql interface) database connection string, if any.
 
         Returns:
-            The connection string, or None if not set.
+            The connection string, or None if the database-legacy relation is
+            gone or no DSN has been stored yet.
         """
+        if not self.model.get_relation(DATABASE_LEGACY_RELATION):
+            return None
         try:
             secret = self.model.get_secret(label=LEGACY_DB_SECRET_LABEL)
         except ops.SecretNotFoundError:
@@ -356,9 +371,14 @@ class LivepatchCharm(paas_charm.go.Charm):
             return
 
         container.push(TRUSTED_CA_FILENAME, cert, make_dirs=True)
-        stdout, stderr = container.exec(["update-ca-certificates", "--fresh"]).wait_output()
-        logger.info("stdout update-ca-certificates: %s", stdout)
-        logger.info("stderr update-ca-certificates: %s", stderr)
+        try:
+            stdout, stderr = container.exec(["update-ca-certificates", "--fresh"]).wait_output()
+            logger.info("stdout update-ca-certificates: %s", stdout)
+            logger.info("stderr update-ca-certificates: %s", stderr)
+        except (ops.pebble.Error, FileNotFoundError) as e:
+            # Don't let a missing executable or a non-zero exit abort restart()
+            # and leave the unit stuck in error; log and continue instead.
+            logger.error("failed to run update-ca-certificates: %s", e)
 
     def metrics_db_connection_string(self) -> typing.Optional[str]:
         """Return the metrics/timescale database connection string, if available.
@@ -524,8 +544,13 @@ class LivepatchCharm(paas_charm.go.Charm):
                 )
                 stdout, _ = process.wait_output()
                 logger.info(stdout)
-            except Exception as e:  # noqa: BLE001 - surfaced to the action caller
-                event.fail(f"schema migration failed for {target} database: {e}")
+            except Exception as e:  # noqa: BLE001 - logged server-side only, see below
+                # The exception (e.g. ops.pebble.ExecError) may embed the exec
+                # argv, which contains the DSN/credentials passed via
+                # `--db <conn_str>`. Log it server-side only; return a
+                # sanitized message to the action caller.
+                logger.error("schema migration failed for %s database: %s", target, e)
+                event.fail(f"schema migration failed for {target} database; see charm logs for details")
                 return
 
         event.set_results({"result": "schema migration completed"})
