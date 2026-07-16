@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "12factor-charm": {
+      "source": "canonical/skills-playground",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/12factor-charm/SKILL.md",
+      "computedHash": "f13bc4b997114a36724bd0375e09a776fe3b5fa5ce5a95fdd0aa8716b5e160d4"
+    }
+  }
+}
