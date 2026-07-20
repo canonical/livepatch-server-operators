@@ -1,6 +1,7 @@
 cosl
 ops
 ops-lib-pgsql
+paas-charm>=1.0,<2
 requests
 responses
 validators
