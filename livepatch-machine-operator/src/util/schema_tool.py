@@ -4,7 +4,9 @@
 """Schema tool action."""
 
 import subprocess  # nosec
+from typing import Tuple
 
+from constants.errors import SCHEMA_VERSION_CHECK_ERROR
 from constants.snap import (
     SCHEMA_UPGRADE_COMMAND,
     SCHEMA_VERSION_CHECK,
@@ -22,6 +24,22 @@ def run_schema_version_check(master_uri: str) -> str:
     except subprocess.CalledProcessError as e:
         result = e.output
     return result
+
+
+def check_schema_version(db_uri: str) -> Tuple[bool, str]:
+    """Check whether the database schema needs upgrading.
+
+    Args:
+        db_uri: the database connection string to check.
+
+    Returns:
+        A tuple of whether an upgrade is required, and the reported version.
+    """
+    result = run_schema_version_check(master_uri=db_uri)
+    lines = result.splitlines()
+    if lines and lines[0].find(SCHEMA_VERSION_CHECK_ERROR) != -1:
+        return True, result
+    return False, result
 
 
 def run_schema_upgrade(master_uri: str) -> str:

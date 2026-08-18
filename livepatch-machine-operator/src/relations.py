@@ -1,0 +1,200 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+"""Relation data gathering and publishing for the Livepatch machine charm.
+
+All relation I/O lives here: resolving the PostgreSQL connection string from
+either the database or the legacy database relation, reading the air-gapped Pro
+contracts address, and re-publishing this unit's outgoing databags.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+from urllib.parse import ParseResult, urlunparse
+
+from ops.model import ModelError, Relation, RelationDataContent
+
+logger = logging.getLogger(__name__)
+
+DATABASE_NAME = "livepatch"
+DATABASE_RELATION = "database"
+DATABASE_RELATION_LEGACY = "database-legacy"
+PRO_AIRGAPPED_SERVER_RELATION = "pro-airgapped-server"
+WEBSITE_RELATION = "website"
+PEER_RELATION = "livepatch"
+
+
+class BothDatabaseRelationsError(Exception):
+    """Raised when both the database and legacy database relations are active."""
+
+
+def is_database_relation_activated(charm: Any) -> bool:
+    """Report whether the database relation is established.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        True if at least one `database` relation exists.
+    """
+    return len(charm.model.relations[DATABASE_RELATION]) > 0
+
+
+def is_legacy_database_relation_activated(charm: Any) -> bool:
+    """Report whether the legacy database relation is established.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        True if at least one `database-legacy` relation exists.
+    """
+    return len(charm.model.relations[DATABASE_RELATION_LEGACY]) > 0
+
+
+def check_database_relations(charm: Any) -> None:
+    """Verify that only one of the two database relations is in use.
+
+    Args:
+        charm: the charm to inspect.
+
+    Raises:
+        BothDatabaseRelationsError: if both database relations are active.
+    """
+    if is_database_relation_activated(charm) and is_legacy_database_relation_activated(charm):
+        raise BothDatabaseRelationsError(
+            "Integration with both database relations is not allowed; "
+            f"use either `{DATABASE_RELATION}` or `{DATABASE_RELATION_LEGACY}`."
+        )
+
+
+def build_database_uri(username: str, password: str, endpoints: str) -> str:
+    """Compose a PostgreSQL connection string from database relation data.
+
+    Args:
+        username: the database username.
+        password: the database password.
+        endpoints: a comma-separated list of endpoints; the first is used.
+
+    Returns:
+        The composed connection string.
+    """
+    endpoint = endpoints.split(",", 1)[0]
+    return f"postgresql://{username}:{password}@{endpoint}/{DATABASE_NAME}"
+
+
+def database_uri(database: Any) -> Optional[str]:
+    """Read the connection string from the database relation.
+
+    Every unit can read the remote application databag directly, so the value
+    is derived on each hook rather than relayed through peer relation data.
+    Credentials delivered as Juju secrets are resolved by the library, which
+    keeps them out of any databag this charm writes.
+
+    ``fetch_relation_data`` iterates over active relations only, so this is
+    safe to call while a `database-relation-broken` hook is running.
+
+    Args:
+        database: the `DatabaseRequires` instance to read from.
+
+    Returns:
+        The connection string, or None while the relation data is incomplete.
+    """
+    for fields in database.fetch_relation_data().values():
+        username = fields.get("username")
+        password = fields.get("password")
+        endpoints = fields.get("endpoints")
+        if username and password and endpoints:
+            return build_database_uri(username, password, endpoints)
+    return None
+
+
+def strip_query_parameters(uri: str) -> str:
+    """Drop query parameters from a PostgreSQL URI.
+
+    Parameters such as `fallback_application_name` make the schema tool fail
+    with `unrecognized configuration parameter (SQLSTATE 42704)`.
+
+    Args:
+        uri: the connection string to clean up.
+
+    Returns:
+        The connection string without its query parameters.
+    """
+    return uri.split("?", 1)[0]
+
+
+def pro_airgapped_url(charm: Any) -> Optional[str]:
+    """Read the air-gapped Pro contracts server address, if related.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        The contracts server URL, or None when unavailable.
+    """
+    relations = charm.model.relations.get(PRO_AIRGAPPED_SERVER_RELATION, None)
+    if not relations:
+        return None
+    return _available_pro_airgapped_server_address(relations[0])
+
+
+def _available_pro_airgapped_server_address(relation: Relation) -> Optional[str]:
+    """Return the Pro air-gapped address taken from related unit databags.
+
+    The returned value is the same on all units, which is achieved by iterating
+    over a sorted list of the available units.
+
+    Args:
+        relation: the pro-airgapped-server relation.
+
+    Returns:
+        The contracts server URL, or None when no unit publishes a valid one.
+    """
+    for unit in sorted(relation.units, key=lambda unit: unit.name):
+        data = relation.data.get(unit, None)
+        if not data:
+            continue
+        address = _extract_pro_airgapped_server_address(data)
+        if address:
+            return address
+    return None
+
+
+def _extract_pro_airgapped_server_address(data: RelationDataContent) -> Optional[str]:
+    """Extract the Pro air-gapped address from a unit databag.
+
+    Args:
+        data: the remote unit's databag.
+
+    Returns:
+        The contracts server URL, or None if the databag is not valid.
+    """
+    hostname = data.get("hostname")
+    if not hostname:
+        logger.error("empty 'hostname' value in pro-airgapped relation data")
+        return None
+
+    scheme = data.get("scheme") or "http"
+    port = data.get("port")
+    netloc = hostname + (f":{port}" if port else "")
+    return urlunparse(ParseResult(scheme, netloc, "", "", "", ""))
+
+
+def push_outgoing(charm: Any, port: str) -> None:
+    """Publish this unit's outgoing relation data.
+
+    This runs on every reconcile rather than only on relation-joined, so the
+    published data cannot go stale when the configuration changes.
+
+    Args:
+        charm: the charm publishing the data.
+        port: the port the Livepatch server listens on.
+    """
+    for relation in charm.model.relations.get(WEBSITE_RELATION, []):
+        try:
+            relation.data[charm.unit]["port"] = port
+        except ModelError as e:
+            logger.warning("could not publish port on the `%s` relation: %s", WEBSITE_RELATION, e)

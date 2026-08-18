@@ -87,7 +87,10 @@ options:
     type: boolean
   auth.basic.users:
     description: |
-      A comma separated list of "user:password" pairs used for authentication.
+      A comma separated list of "user:password" pairs used for authentication,
+      where the password is a bcrypt hash of the plaintext password. You can
+      use the `set-basic-users` action to get the bcrypt hash for a plaintext
+      password.
     type: string
   contracts.enabled:
     default: false
