@@ -32,7 +32,6 @@ exclude:
 - .venv
 - .*_cache
 
-# TODO: rework the machine suite once it is switched to jubilant
 integration-suites:
   # Every test deploys postgresql-k8s, which blocks on "<10% free space on
   # pgdata volume" on GitHub-hosted runners, so all run on the `-large` systems.
@@ -71,17 +70,15 @@ integration-suites:
       CHARM_PATH={{ build.path }}
       {% endfor %}
       LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
-  # TODO: the machine suite is temporarily disabled while the k8s cross-model
-  # tests are being stabilised; re-enable once it is switched to jubilant.
-  # livepatch-machine-operator/tests/integration/:
-  #   working-dir: livepatch-machine-operator/
-  #   summary: livepatch-machine-operator integration tests
-  #   systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
-  #   backends:
-  #   - integration-test
-  #   auto-discover: true
-  #   pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
-  #   pytest-environment-template: |
-  #     {% for build in artifacts.charms[1].builds if build.arch == arch %}
-  #     CHARM_PATH={{ build.path }}
-  #     {% endfor %}
+  livepatch-machine-operator/tests/integration/:
+    working-dir: livepatch-machine-operator/
+    summary: livepatch-machine-operator integration tests
+    systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04-large, ubuntu-26.04-large] # large system coverage to ensure backwards compatibility with the old machine charm.
+    backends:
+    - integration-test
+    auto-discover: true
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs --juju-model testing'
+    pytest-environment-template: |
+      {% for build in artifacts.charms[1].builds if build.arch == arch %}
+      CHARM_PATH={{ build.path }}
+      {% endfor %}
