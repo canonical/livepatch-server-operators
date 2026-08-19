@@ -44,7 +44,7 @@ integration-suites:
     backends:
     - integration-test
     auto-discover: true
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-model testing'
     pytest-environment-template: |
       {% for build in artifacts.charms[1].builds if build.arch == arch %}
       CHARM_PATH={{ build.path }}
