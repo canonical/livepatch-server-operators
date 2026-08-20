@@ -66,14 +66,27 @@ _SENSITIVE_ENV_VAR_PATTERN = re.compile(
     r"|LP_PATCH_STORAGE_S3_ACCESS_KEY"
     r"|LP_PATCH_STORAGE_SWIFT_API_KEY"
     r"|LP_PATCH_STORAGE_SWIFT_USERNAME"
+    r"|LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY"
+    r"|LP_PATCH_STORAGE_AZURE_CONNECTION_STRING"
+    r"|LP_PATCH_STORAGE_AZURE_CLIENT_SECRET"
+    r"|LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON"
+    r"|LP_PATCH_STORAGE_IBM_ACCESS_KEY"
+    r"|LP_PATCH_STORAGE_IBM_SECRET_KEY"
+    r"|LP_PATCH_STORAGE_IBM_API_KEY"
     r"|LP_AUTH_BASIC_USERS"
     r"|LP_AUTH_SSO_PUBLIC_KEY"
     r"|LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"
     r"|LP_DATABASE_CONNECTION_STRING"
     r")"
     r"(?P<sep>=)"
-    r"(?P<value>\S+)",
-    re.IGNORECASE,
+    # Non-greedy, spanning newlines (DOTALL): stop only before a run of trailing
+    # whitespace at end of string, or right before what looks like a genuine
+    # subsequent KEY=value assignment (env var names always contain an
+    # underscore, unlike base64/PEM content lines, which can otherwise be
+    # mistaken for one), so multi-line secrets (PEM keys, pretty-printed JSON)
+    # are fully redacted without leaking a suffix or absorbing trailing whitespace.
+    r"(?P<value>.+?)(?=\s+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+=|\s*$)",
+    re.IGNORECASE | re.DOTALL,
 )
 
 _PATTERNS = [
