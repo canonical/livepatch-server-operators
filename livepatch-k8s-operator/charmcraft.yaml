@@ -193,10 +193,10 @@ config:
       description: Public key for the auth server
       type: string
     auth.oauth.enabled:
-    default: false
-    description: |
-      Whether OAuth 2.0 bearer token authentication backed by Canonical IdP should be enabled for admin API access.
-    type: boolean
+      default: false
+      description: |
+        Whether OAuth 2.0 bearer token authentication backed by Canonical IdP should be enabled for admin API access.
+      type: boolean
     auth.oauth.audience:
       description: |
         Expected JWT audience claim value for OAuth authentication.
@@ -245,11 +245,11 @@ config:
       type: boolean
     auth.oauth.proxy.http:
       default: ""
-      description: A comma separated list HTTP proxies to query the OAuth provider.
+      description: A comma separated list of HTTP proxies to query the OAuth provider.
       type: string
     auth.oauth.proxy.https:
       default: ""
-      description: A comma separated list HTTPS proxies to query the OAuth provider.
+      description: A comma separated list of HTTPS proxies to query the OAuth provider.
       type: string
     auth.oauth.proxy.no-proxy:
       default: ""
