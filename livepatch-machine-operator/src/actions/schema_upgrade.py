@@ -36,8 +36,16 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
     """Run schema upgrade action."""
     event.log("Running schema upgrade action...")
     if self.unit.is_leader():
+        # TODO: the livepatch server snap does not yet expose a command that only
+        # *checks* whether a schema upgrade is required without also running it.
+        # Once such a command is available, use it here to skip invoking
+        # `run_schema_upgrade` altogether when no upgrade is actually needed,
+        # rather than running it unconditionally and comparing versions
+        # before/after as we do below.
+        _, version_before = _check_schema_upgrade_ran(self)
+
         run_schema_upgrade(self.database_uri)
-        upgrade_required, version = _check_schema_upgrade_ran(self)
+        upgrade_required, version_after = _check_schema_upgrade_ran(self)
 
         if upgrade_required:
             failure_reason = "Schema upgrade failed."
@@ -46,7 +54,7 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
             event.set_results(
                 {
                     "schema-upgrade-required": upgrade_required,
-                    "schema-version": version,
+                    "schema-version": version_after,
                 }
             )
             event.fail(failure_reason)
@@ -55,8 +63,11 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
             event.set_results(
                 {
                     "schema-upgrade-required": upgrade_required,
-                    "schema-version": version,
+                    "schema-version": version_after,
                 }
             )
 
-            self._restart_all_units()
+            if version_after != version_before:
+                self._restart_all_units()
+            else:
+                event.log("Schema was already up to date, skipping restart.")

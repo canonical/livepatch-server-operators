@@ -121,7 +121,7 @@ class MachineReconciler:
             self.status = self._database_pending_status()
             return
 
-        if not self._schema_migrated(db_uri, force_check=snap_changed):
+        if not self._schema_migrated(db_uri):
             self.status = BlockedStatus(SCHEMA_UPGRADE_REQUIRED)
             return
 
@@ -212,30 +212,21 @@ class MachineReconciler:
 
     # -- Schema helpers.
 
-    def _schema_migrated(self, db_uri: str, force_check: bool) -> bool:
+    def _schema_migrated(self, db_uri: str) -> bool:
         """Check that the database schema has been migrated.
-
-        A positive result is cached per unit against the connection string it
-        was obtained for, and reused on later calls unless `force_check` is set.
 
         Args:
             db_uri: the database connection string to check.
-            force_check: True to bypass the cache and check unconditionally.
 
         Returns:
             True if the schema is up to date.
         """
-        if not force_check and self._unit_state.is_ready() and self._unit_state.schema_migrated_uri == db_uri:
-            return True
-
         upgrade_required, version = check_schema_version(db_uri)
         if upgrade_required:
             logger.warning("database schema requires a migration")
             return False
 
         logger.info("database has been migrated; current version: %s", version)
-        if self._unit_state.is_ready():
-            self._unit_state.schema_migrated_uri = db_uri
         return True
 
     # -- Certificate helpers.
