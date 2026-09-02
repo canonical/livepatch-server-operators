@@ -53,15 +53,15 @@ def _hash_users(users_list: List[str]) -> Tuple[List[str], List[str]]:
     """
     hashed_users: List[str] = []
     set_users: List[str] = []
-    for user in users_list:
+    for index, user in enumerate(users_list, start=1):
         # maxsplit=1 lets a password contain further colons; only the first
         # one separates it from the username.
         parts = user.split(":", 1)
         if len(parts) != 2:
-            raise ValueError(f"Invalid entry {user!r}; expected the form `username:password`.")
+            raise ValueError(f"Invalid entry #{index}; expected the form `username:password`.")
         username, password = parts
         if not username:
-            raise ValueError(f"Invalid entry {user!r}; the username cannot be empty.")
+            raise ValueError(f"Invalid entry #{index}; the username cannot be empty.")
         if not password:
             # Deliberately not naming the password: an empty bcrypt hash is a
             # valid hash, and a blank password would let anyone authenticate
