@@ -39,6 +39,7 @@ from constants.statuses import (
     LIVEPATCH_FAILED_TO_CONFIGURE,
     LIVEPATCH_FAILED_TO_INSTALL,
     LIVEPATCH_FAILED_TO_RESTART,
+    LIVEPATCH_FAILED_TO_UPDATE_CA,
     LIVEPATCH_NOT_RUNNING,
     LIVEPATCH_RUNNING,
     SCHEMA_UPGRADE_REQUIRED,
@@ -126,7 +127,12 @@ class MachineReconciler:
             return
 
         # -- Converge trusted certificates and snap configuration.
-        ca_changed = self._converge_trusted_ca(config)
+        try:
+            ca_changed = self._converge_trusted_ca(config)
+        except (OSError, subprocess.CalledProcessError) as e:
+            logger.error("failed to update the trusted CA certificate: %s", e)
+            self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_UPDATE_CA)
+            return
         desired = config.to_snap_config(
             db_uri=db_uri,
             is_leader=charm.unit.is_leader(),
@@ -253,6 +259,8 @@ class MachineReconciler:
             return False
 
         path.write_text(desired)
-        result = subprocess.check_output(["update-ca-certificates", "--fresh"], stderr=subprocess.STDOUT)  # nosec
+        result = subprocess.check_output(
+            ["update-ca-certificates", "--fresh"], text=True, stderr=subprocess.STDOUT
+        )  # nosec
         logger.info("output update-ca-certificates: %s", result)
         return True

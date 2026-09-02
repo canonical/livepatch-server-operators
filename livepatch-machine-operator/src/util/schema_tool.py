@@ -19,7 +19,7 @@ def run_schema_version_check(master_uri: str) -> str:
     _cmd = [f"{SERVER_SNAP_NAME}.{SCHEMA_VERSION_CHECK}", master_uri]
     result = "failed"
     try:
-        result = subprocess.check_output(_cmd, universal_newlines=True, stderr=subprocess.STDOUT)  # nosec
+        result = subprocess.check_output(_cmd, text=True, stderr=subprocess.STDOUT)  # nosec
 
     except subprocess.CalledProcessError as e:
         result = e.output
@@ -50,7 +50,7 @@ def run_schema_upgrade(master_uri: str) -> str:
     ]
     result = "failed"
     try:
-        result = subprocess.check_output(_cmd, universal_newlines=True, stderr=subprocess.STDOUT)  # nosec
+        result = subprocess.check_output(_cmd, text=True, stderr=subprocess.STDOUT)  # nosec
 
     except subprocess.CalledProcessError as e:
         result = e.output

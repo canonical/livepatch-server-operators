@@ -36,6 +36,13 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
     """Run schema upgrade action."""
     event.log("Running schema upgrade action...")
     if self.unit.is_leader():
+        db_uri = self.database_uri
+        if not db_uri:
+            failure_reason = "Database is not ready, cannot run schema upgrade."
+            event.log(failure_reason)
+            event.fail(failure_reason)
+            return
+
         # TODO: the livepatch server snap does not yet expose a command that only
         # *checks* whether a schema upgrade is required without also running it.
         # Once such a command is available, use it here to skip invoking
@@ -44,7 +51,7 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
         # before/after as we do below.
         _, version_before = _check_schema_upgrade_ran(self)
 
-        run_schema_upgrade(self.database_uri)
+        run_schema_upgrade(db_uri)
         upgrade_required, version_after = _check_schema_upgrade_ran(self)
 
         if upgrade_required:

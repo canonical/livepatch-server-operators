@@ -158,7 +158,7 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
     else:
         combined_users = ",".join(hashed_users)
 
-    command = f'juju config {self.app.name} {KEY_AUTH_BASIC_USERS}="{combined_users}" {KEY_AUTH_BASIC_ENABLED}=true'
+    command = f"juju config {self.app.name} {KEY_AUTH_BASIC_USERS}='{combined_users}' {KEY_AUTH_BASIC_ENABLED}=true"
     event.log("Apply the hashed users by running:")
     event.log(command)
     event.set_results(
