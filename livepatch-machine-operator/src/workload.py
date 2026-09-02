@@ -14,7 +14,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from charms.operator_libs_linux.v2.snap import Snap, SnapCache, SnapError, SnapState
+from charms.operator_libs_linux.v2.snap import (
+    Snap,
+    SnapAPIError,
+    SnapCache,
+    SnapError,
+    SnapNotFoundError,
+    SnapState,
+)
 
 from config import SNAP_CONFIG_PREFIX
 from constants.snap import SERVER_SNAP_NAME, SERVER_SNAP_REVISION
@@ -83,10 +90,18 @@ class SnapWorkload:
 
         Returns:
             The snap from the (lazily built) snap cache.
+
+        Raises:
+            SnapError: if the snap cannot be looked up, for any reason.
         """
         if self._cache is None:
             self._cache = SnapCache()
-        return self._cache.get(self._snap_name)
+        try:
+            return self._cache.get(self._snap_name)
+        except (SnapNotFoundError, SnapAPIError) as e:
+            # Neither is a subclass of SnapError, but callers only guard against
+            # that one, so every snap lookup failure is normalised to it here.
+            raise SnapError(str(e)) from e
 
     def _invalidate_cache(self) -> None:
         """Discard the cached snap data so the next read comes from snapd.

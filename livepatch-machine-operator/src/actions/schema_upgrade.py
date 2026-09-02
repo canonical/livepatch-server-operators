@@ -49,10 +49,16 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
         # `run_schema_upgrade` altogether when no upgrade is actually needed,
         # rather than running it unconditionally and comparing versions
         # before/after as we do below.
-        _, version_before = _check_schema_upgrade_ran(self)
-
-        run_schema_upgrade(db_uri)
-        upgrade_required, version_after = _check_schema_upgrade_ran(self)
+        try:
+            _, version_before = _check_schema_upgrade_ran(self)
+            run_schema_upgrade(db_uri)
+            upgrade_required, version_after = _check_schema_upgrade_ran(self)
+        except OSError as e:
+            failure_reason = f"Failed to run the schema upgrade command: {e}"
+            self.unit.status = MaintenanceStatus(failure_reason)
+            event.log(failure_reason)
+            event.fail(failure_reason)
+            return
 
         if upgrade_required:
             failure_reason = "Schema upgrade failed."

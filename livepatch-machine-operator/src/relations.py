@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
-from urllib.parse import ParseResult, urlunparse
+from urllib.parse import ParseResult, quote, urlunparse
 
 from ops.model import ModelError, Relation, RelationDataContent
 
@@ -82,7 +82,9 @@ def build_database_uri(username: str, password: str, endpoints: str) -> str:
         The composed connection string.
     """
     endpoint = endpoints.split(",", 1)[0]
-    return f"postgresql://{username}:{password}@{endpoint}/{DATABASE_NAME}"
+    # Reserved URI characters in either credential (`@`, `:`, `/`, ...) would
+    # otherwise be misparsed as part of the URI's structure.
+    return f"postgresql://{quote(username, safe='')}:{quote(password, safe='')}@{endpoint}/{DATABASE_NAME}"
 
 
 def database_uri(database: Any) -> Optional[str]:

@@ -14,3 +14,4 @@ LIVEPATCH_FAILED_TO_INSTALL = "Livepatch server snap failed to install or refres
 LIVEPATCH_FAILED_TO_CONFIGURE = "Livepatch server snap failed to apply configuration."
 LIVEPATCH_FAILED_TO_RESTART = "Livepatch server failed to restart."
 LIVEPATCH_FAILED_TO_UPDATE_CA = "Livepatch server failed to update the trusted CA certificate."
+LIVEPATCH_FAILED_TO_CHECK_SCHEMA = "Livepatch server failed to check the database schema version."

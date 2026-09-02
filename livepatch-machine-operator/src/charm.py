@@ -86,6 +86,8 @@ class OperatorMachineCharm(CharmBase):
         Returns:
             The connection string, or None if the relation is not in use.
         """
+        if not relations.is_legacy_database_relation_activated(self):
+            return None
         if not self._unit_state.is_ready():
             return None
         uri = self._unit_state.legacy_db_uri

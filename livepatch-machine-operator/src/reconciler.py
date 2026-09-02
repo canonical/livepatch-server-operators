@@ -36,6 +36,7 @@ from constants.statuses import (
     AWAIT_POSTGRES_PRIMARY,
     AWAIT_POSTGRES_RELATION,
     AWAIT_POSTGRES_URI,
+    LIVEPATCH_FAILED_TO_CHECK_SCHEMA,
     LIVEPATCH_FAILED_TO_CONFIGURE,
     LIVEPATCH_FAILED_TO_INSTALL,
     LIVEPATCH_FAILED_TO_RESTART,
@@ -122,7 +123,13 @@ class MachineReconciler:
             self.status = self._database_pending_status()
             return
 
-        if not self._schema_migrated(db_uri):
+        try:
+            schema_migrated = self._schema_migrated(db_uri)
+        except OSError as e:
+            logger.error("failed to check the database schema version: %s", e)
+            self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_CHECK_SCHEMA)
+            return
+        if not schema_migrated:
             self.status = BlockedStatus(SCHEMA_UPGRADE_REQUIRED)
             return
 
