@@ -224,7 +224,9 @@ class SnapWorkload:
         current = self.current_config()
         # A snap option set to an empty string is removed by snapd, so an
         # absent key and an empty desired value are equivalent.
-        return {key: value for key, value in desired.items() if current.get(key, "") != _normalise(value)}
+        return {
+            key: _normalise(value) for key, value in desired.items() if current.get(key, "") != _normalise(value)
+        }
 
     def apply_config(self, desired: Dict[str, Any]) -> bool:
         """Write the desired configuration to the snap, if it differs.
