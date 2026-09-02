@@ -67,13 +67,18 @@ def _hash_users(users_list: List[str]) -> Tuple[List[str], List[str]]:
             # valid hash, and a blank password would let anyone authenticate
             # as this user.
             raise ValueError(f"The password for {username} cannot be empty.")
-        if len(password) > 72:
+        # The current version of bcrypt truncates passwords over 72 bytes, and a
+        # multi-byte UTF-8 character can push the byte length past the
+        # character length, so the encoded form is what must be checked.
+        # https://github.com/pyca/bcrypt#maximum-password-length
+        encoded_password = password.encode("utf-8")
+        if len(encoded_password) > 72:
             # The password itself is deliberately kept out of the message, as
             # it would otherwise reach the unit status and the Juju log.
-            raise ValueError(f"The password for {username} cannot be more than 72 characters.")
+            raise ValueError(f"The password for {username} cannot be more than 72 bytes when utf-8 encoded.")
         if username in set_users:
             raise ValueError(f"The user {username} is listed more than once.")
-        hashed = bcrypt.hashpw(str.encode(password), bcrypt.gensalt(rounds=10))
+        hashed = bcrypt.hashpw(encoded_password, bcrypt.gensalt(rounds=10))
         hashed_users.append(f"{username}:{hashed.decode()}")
         set_users.append(username)
     return hashed_users, set_users
