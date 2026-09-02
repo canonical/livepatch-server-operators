@@ -238,7 +238,7 @@ class MachineReconciler:
     # -- Certificate helpers.
 
     def _converge_trusted_ca(self, config: CharmConfig) -> bool:
-        """Install the configured contracts CA certificate, if it changed.
+        """Install or remove the configured contracts CA certificate, if it changed.
 
         Rewriting the trust store and refreshing it is expensive, so it only
         happens when the configured certificate differs from the installed one.
@@ -250,15 +250,18 @@ class MachineReconciler:
             True if the trust store was updated.
         """
         desired = config.contracts_ca
-        if desired is None:
-            logger.debug("ca config not set")
-            return False
-
         path = Path(TRUSTED_CA_FILENAME)
-        if path.exists() and path.read_text() == desired:
-            return False
 
-        path.write_text(desired)
+        if desired is None:
+            if not path.exists():
+                logger.debug("ca config not set")
+                return False
+            path.unlink()
+        else:
+            if path.exists() and path.read_text() == desired:
+                return False
+            path.write_text(desired)
+
         result = subprocess.check_output(
             ["update-ca-certificates", "--fresh"], text=True, stderr=subprocess.STDOUT
         )  # nosec
