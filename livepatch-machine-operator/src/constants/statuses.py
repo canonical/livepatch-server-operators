@@ -3,8 +3,15 @@
 
 """Status Constants."""
 
-LIVEPATCH_NOT_INSTALLED_ERROR = "Livepatch snap not installed, re-install the charm or run the install hook again."
-CHECKING_DB_VERS = "Checking database schema version..."
-INSTALLING = "Installing livepatch server..."
-SUCCESSFUL_INSTALL = "Snap installed! Waiting on postgres relation..."
+# Statuses reported by the reconciler through `collect_unit_status`.
 AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
+AWAIT_POSTGRES_URI = "Waiting for postgres..."
+AWAIT_POSTGRES_PRIMARY = "Waiting for postgres to select primary node..."
+SCHEMA_UPGRADE_REQUIRED = "Database not initialised, please run the schema-upgrade action."
+LIVEPATCH_RUNNING = "Livepatch server running!"
+LIVEPATCH_NOT_RUNNING = "Livepatch server is not running."
+LIVEPATCH_FAILED_TO_INSTALL = "Livepatch server snap failed to install or refresh."
+LIVEPATCH_FAILED_TO_CONFIGURE = "Livepatch server snap failed to apply configuration."
+LIVEPATCH_FAILED_TO_RESTART = "Livepatch server failed to restart."
+LIVEPATCH_FAILED_TO_UPDATE_CA = "Livepatch server failed to update the trusted CA certificate."
+LIVEPATCH_FAILED_TO_CHECK_SCHEMA = "Livepatch server failed to check the database schema version."
