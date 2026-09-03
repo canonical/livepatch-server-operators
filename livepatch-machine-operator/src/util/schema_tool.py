@@ -14,6 +14,10 @@ from constants.snap import (
 )
 
 
+class SchemaToolError(RuntimeError):
+    """Raised when a schema-tool command fails unexpectedly."""
+
+
 def run_schema_version_check(master_uri: str) -> str:
     """Run a schema version check against the database."""
     _cmd = [f"{SERVER_SNAP_NAME}.{SCHEMA_VERSION_CHECK}", master_uri]
@@ -22,7 +26,10 @@ def run_schema_version_check(master_uri: str) -> str:
         result = subprocess.check_output(_cmd, text=True, stderr=subprocess.STDOUT)  # nosec
 
     except subprocess.CalledProcessError as e:
-        result = e.output
+        result = e.output or ""
+        lines = result.splitlines()
+        if not lines or SCHEMA_VERSION_CHECK_ERROR not in lines[0]:
+            raise SchemaToolError("schema version check command failed") from e
     return result
 
 
@@ -53,5 +60,5 @@ def run_schema_upgrade(master_uri: str) -> str:
         result = subprocess.check_output(_cmd, text=True, stderr=subprocess.STDOUT)  # nosec
 
     except subprocess.CalledProcessError as e:
-        result = e.output
+        raise SchemaToolError("schema upgrade command failed") from e
     return result

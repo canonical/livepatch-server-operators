@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Tuple
 from ops.charm import ActionEvent
 from ops.model import MaintenanceStatus
 
-from util.schema_tool import check_schema_version, run_schema_upgrade
+from util.schema_tool import SchemaToolError, check_schema_version, run_schema_upgrade
 
 if TYPE_CHECKING:
     from charm import OperatorMachineCharm
@@ -53,7 +53,7 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
             _, version_before = _check_schema_upgrade_ran(self)
             run_schema_upgrade(db_uri)
             upgrade_required, version_after = _check_schema_upgrade_ran(self)
-        except OSError as e:
+        except (OSError, SchemaToolError) as e:
             failure_reason = f"Failed to run the schema upgrade command: {e}"
             self.unit.status = MaintenanceStatus(failure_reason)
             event.log(failure_reason)

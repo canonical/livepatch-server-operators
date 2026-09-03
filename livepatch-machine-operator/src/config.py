@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from base64 import b64decode
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def parse_server_port(server_address: Optional[str]) -> Optional[str]:
     return port or None
 
 
-def _decode_contracts_ca(encoded: Optional[str]) -> Optional[str]:
+def _decode_contracts_ca(encoded: Optional[str]) -> Tuple[Optional[str], bool]:
     """Decode the base64-encoded ``contracts.ca`` configuration option.
 
     A malformed value is logged and ignored rather than blocking the charm,
@@ -77,15 +77,15 @@ def _decode_contracts_ca(encoded: Optional[str]) -> Optional[str]:
         encoded: the raw base64 configuration value, if set.
 
     Returns:
-        The decoded PEM text, or None if unset or undecodable.
+        The decoded PEM text and whether a configured value was undecodable.
     """
     if not encoded:
-        return None
+        return None, False
     try:
-        return b64decode(encoded).decode("utf8")
+        return b64decode(encoded).decode("utf8"), False
     except Exception:  # noqa: B902 - any decoding failure is treated the same
         logger.error("failed to parse base64 value of `contracts.ca` config option")
-        return None
+        return None, True
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,8 @@ class CharmConfig:
         server_address: the validated ``server.server-address`` option.
         server_port: the port parsed out of ``server_address``.
         contracts_ca: the decoded ``contracts.ca`` PEM, if any.
+        has_invalid_contracts_ca: whether ``contracts.ca`` was configured but
+            could not be decoded.
         patch_storage_postgres: the ``patch-storage.postgres-connection-string``
             option, which falls back to the database URI when empty.
         patch_sync_enabled: whether patch synchronisation is enabled.
@@ -108,6 +110,7 @@ class CharmConfig:
     server_address: str
     server_port: str
     contracts_ca: Optional[str]
+    has_invalid_contracts_ca: bool
     patch_storage_postgres: str
     patch_sync_enabled: bool
 
@@ -134,13 +137,15 @@ class CharmConfig:
         server_port = parse_server_port(server_address)
         if server_port is None:
             raise InvalidCharmConfigError("✘ server.server-address config must be in `host:port` form")
+        contracts_ca, has_invalid_contracts_ca = _decode_contracts_ca(raw.get(OPT_CONTRACTS_CA))
 
         return cls(
             raw=raw,
             url_template=url_template,
             server_address=server_address,
             server_port=server_port,
-            contracts_ca=_decode_contracts_ca(raw.get(OPT_CONTRACTS_CA)),
+            contracts_ca=contracts_ca,
+            has_invalid_contracts_ca=has_invalid_contracts_ca,
             patch_storage_postgres=str(raw.get(OPT_PATCH_STORAGE_POSTGRES) or ""),
             patch_sync_enabled=raw.get(OPT_PATCH_SYNC_ENABLED) is True,
         )

@@ -46,7 +46,7 @@ from constants.statuses import (
     SCHEMA_UPGRADE_REQUIRED,
 )
 from relations import BothDatabaseRelationsError
-from util.schema_tool import check_schema_version
+from util.schema_tool import SchemaToolError, check_schema_version
 from workload import SnapWorkload
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,7 @@ class MachineReconciler:
 
         try:
             schema_migrated = self._schema_migrated(db_uri)
-        except OSError as e:
+        except (OSError, SchemaToolError) as e:
             logger.error("failed to check the database schema version: %s", e)
             self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_CHECK_SCHEMA)
             return
@@ -258,19 +258,30 @@ class MachineReconciler:
         """
         desired = config.contracts_ca
         path = Path(TRUSTED_CA_FILENAME)
+        current_ca = path.read_text() if path.exists() else None
 
+        if config.has_invalid_contracts_ca:
+            return False
         if desired is None:
-            if not path.exists():
+            if current_ca is None:
                 logger.debug("ca config not set")
                 return False
             path.unlink()
         else:
-            if path.exists() and path.read_text() == desired:
+            if current_ca == desired:
                 return False
             path.write_text(desired)
 
-        result = subprocess.check_output(
-            ["update-ca-certificates", "--fresh"], text=True, stderr=subprocess.STDOUT
-        )  # nosec
+        try:
+            result = subprocess.check_output(
+                ["update-ca-certificates", "--fresh"], text=True, stderr=subprocess.STDOUT
+            )  # nosec
+        except (OSError, subprocess.CalledProcessError):
+            # Restore the source file so the next reconcile retries the refresh.
+            if current_ca is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(current_ca)
+            raise
         logger.info("output update-ca-certificates: %s", result)
         return True
