@@ -76,6 +76,7 @@ SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
     ),
     "patch_storage.ibm_api_key": ("patch_storage.ibm_api_key_secret", "LP_PATCH_STORAGE_IBM_API_KEY"),
     "patch_sync.token": ("patch_sync.token_secret", "LP_PATCH_SYNC_TOKEN"),
+    "influx.token": ("influx.token_secret", "LP_INFLUX_TOKEN"),
 }
 
 # Config options that bundle several related, deprecated plain-text options
@@ -132,9 +133,15 @@ def _resolve_secret_config(
     Returns:
         The secret's `content_key` content, or None if unset or inaccessible.
     """
-    value = config_get_with_secret(charm, key)
+    try:
+        value = config_get_with_secret(charm, key)
+    except ops.SecretNotFoundError:
+        return None
     if isinstance(value, ops.Secret):
-        return value.get_content(refresh=True).get(content_key)
+        try:
+            return value.get_content(refresh=True).get(content_key)
+        except ops.SecretNotFoundError:
+            return None
     return typing.cast(typing.Optional[str], value)
 
 

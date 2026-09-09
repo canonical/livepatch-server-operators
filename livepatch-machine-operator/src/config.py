@@ -137,7 +137,8 @@ def _resolve_secret_options(charm: Any, raw: Dict[str, Any]) -> None:
         raw: the raw Juju configuration mapping, mutated in-place.
 
     Raises:
-        InvalidCharmConfigError: if a configured secret is inaccessible.
+        InvalidCharmConfigError: if a configured secret is inaccessible, or a
+            standalone secret is set but missing its expected content key.
     """
     for plain_key, secret_key in SECRET_FALLBACK_OPTIONS.items():
         secret_id = raw.pop(secret_key, None)
@@ -145,8 +146,11 @@ def _resolve_secret_options(charm: Any, raw: Dict[str, Any]) -> None:
             continue
         content = _get_secret_content(charm, secret_key, secret_id)
         value = content.get(SECRET_VALUE_KEY)
-        if value is not None:
-            raw[plain_key] = value
+        if value is None:
+            raise InvalidCharmConfigError(
+                f"✘ the secret configured for `{secret_key}` must have a `{SECRET_VALUE_KEY}` key"
+            )
+        raw[plain_key] = value
 
     for group_key, sub_keys in SECRET_GROUPS.items():
         secret_id = raw.pop(group_key, None)

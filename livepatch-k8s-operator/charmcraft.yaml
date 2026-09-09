@@ -892,8 +892,18 @@ config:
       description: "URL to connect to influx DB"
       type: string
     influx.token:
-      description: "Token to use for influx"
+      description: |
+        Token to use for influx.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        influx.token-secret to a Juju secret URI instead.
       type: string
+    influx.token-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to influx.token: takes priority over it
+        when both are set. Must be set to the URI of a Juju secret containing a `value`
+        key with the token.
+      type: secret
     influx.bucket:
       description: "Bucket to send data"
       type: string
