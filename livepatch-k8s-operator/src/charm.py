@@ -558,7 +558,8 @@ class LivepatchCharm(paas_charm.go.Charm):
 
         if self.config.get("patch-sync.token") or self.config.get("patch-sync.token-secret"):
             event.fail(
-                "patch-sync.token is already set. It should be unset before setting a resource token"
+                "patch-sync.token/patch-sync.token-secret is already set. It should be unset "
+                "before setting a resource token"
             )
             return
 

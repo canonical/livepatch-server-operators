@@ -158,17 +158,6 @@ def _resolve_secret_options(charm: Any, raw: Dict[str, Any]) -> None:
             if value is not None:
                 raw[target_key] = value
 
-    for group_key, sub_keys in SECRET_GROUPS.items():
-        secret_id = raw.pop(group_key, None)
-        if not secret_id:
-            continue
-        content = _get_secret_content(charm, group_key, secret_id)
-        for content_key, target_key in sub_keys.items():
-            value = content.get(content_key)
-            if value is not None:
-                raw[target_key] = value
-
-
 
 def parse_server_port(server_address: Optional[str]) -> Optional[str]:
     """Extract the port from a ``host:port`` server address.

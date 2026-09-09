@@ -11,7 +11,7 @@ import bcrypt
 import ops
 from ops.charm import ActionEvent
 
-from config import KEY_AUTH_BASIC_ENABLED, KEY_AUTH_BASIC_USERS, SECRET_VALUE_KEY
+from config import KEY_AUTH_BASIC_ENABLED, KEY_AUTH_BASIC_USERS, SECRET_FALLBACK_OPTIONS, SECRET_VALUE_KEY
 
 if TYPE_CHECKING:
     from charm import OperatorMachineCharm
@@ -137,7 +137,7 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
     `auth.basic.users` config option, which holds a Juju secret URI.
 
     Set `append=true` to combine the new users with the ones already present
-    in `auth.basic.users`, instead of replacing them.
+    in `auth.basic.users`/`auth.basic.users-secret`, instead of replacing them.
     """
     event.log("Hashing basic auth users...")
 
@@ -151,37 +151,43 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
         event.fail(str(e))
         return
 
-    existing_secret_id = self.config.get(KEY_AUTH_BASIC_USERS)
+    existing_secret_id = self.config.get(SECRET_FALLBACK_OPTIONS[KEY_AUTH_BASIC_USERS])
     if event.params.get("append") is True:
-        if not existing_secret_id:
-            event.fail("No existing users configured to append to; set `auth.basic.users` first.")
-            return
-        try:
-            existing_users = (
-                self.model.get_secret(id=existing_secret_id).get_content(refresh=True).get(SECRET_VALUE_KEY)
-                or ""
-            )
-        except ops.SecretNotFoundError:
-            event.fail(
-                "Could not access the secret configured for `auth.basic.users`. Run "
-                f"`juju grant-secret <secret> {self.app.name}` and try again."
-            )
-            return
+        if existing_secret_id:
+            try:
+                existing_users = (
+                    self.model.get_secret(id=existing_secret_id).get_content(refresh=True).get(SECRET_VALUE_KEY)
+                    or ""
+                )
+            except ops.SecretNotFoundError:
+                event.fail(
+                    "Could not access the secret configured for `auth.basic.users-secret`. Run "
+                    f"`juju grant-secret <secret> {self.app.name}` and try again."
+                )
+                return
+        else:
+            existing_users = self.config.get(KEY_AUTH_BASIC_USERS) or ""
         if not existing_users:
-            event.fail("No existing users configured to append to; set `auth.basic.users` first.")
+            event.fail(
+                "No existing users configured to append to; set `auth.basic.users` or "
+                "`auth.basic.users-secret` first."
+            )
             return
         duplicate = _find_duplicate(existing_users, set_users)
         if duplicate:
             event.fail(f"The user {duplicate} already exists.")
             return
         combined_users = f"{existing_users},{','.join(hashed_users)}"
-        command = f"juju update-secret {existing_secret_id} {SECRET_VALUE_KEY}='{combined_users}'"
+        if existing_secret_id:
+            command = f"juju update-secret {existing_secret_id} {SECRET_VALUE_KEY}='{combined_users}'"
+        else:
+            command = f"juju config {self.app.name} {KEY_AUTH_BASIC_USERS}='{combined_users}'"
     else:
         combined_users = ",".join(hashed_users)
         command = (
             f"juju add-secret livepatch-basic-users {SECRET_VALUE_KEY}='{combined_users}' && "
             f"juju grant-secret livepatch-basic-users {self.app.name} && "
-            f"juju config {self.app.name} {KEY_AUTH_BASIC_USERS}=<secret-uri-from-add-secret> "
+            f"juju config {self.app.name} {SECRET_FALLBACK_OPTIONS[KEY_AUTH_BASIC_USERS]}=<secret-uri-from-add-secret> "
             f"{KEY_AUTH_BASIC_ENABLED}=true"
         )
 
