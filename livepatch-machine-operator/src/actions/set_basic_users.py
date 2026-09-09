@@ -156,9 +156,8 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
     if event.params.get("append") is True:
         if existing_secret_id:
             try:
-                existing_users = (
-                    self.model.get_secret(id=existing_secret_id).get_content(refresh=True).get(SECRET_VALUE_KEY)
-                    or ""
+                existing_users = self.model.get_secret(id=existing_secret_id).get_content(refresh=True).get(
+                    SECRET_VALUE_KEY
                 )
             except ops.SecretNotFoundError:
                 event.fail(
@@ -166,8 +165,14 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
                     f"`juju grant-secret <secret> {self.app.name}` and try again."
                 )
                 return
+            if existing_users is None:
+                event.fail(
+                    "The secret configured for `auth.basic.users-secret` must have a "
+                    f"`{SECRET_VALUE_KEY}` key."
+                )
+                return
         else:
-            existing_users = self.config.get(KEY_AUTH_BASIC_USERS) or ""
+            existing_users = self.config.get(KEY_AUTH_BASIC_USERS)
         if not existing_users:
             event.fail(
                 "No existing users configured to append to; set `auth.basic.users` or "
