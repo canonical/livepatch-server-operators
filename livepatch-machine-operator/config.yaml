@@ -58,28 +58,6 @@ options:
     description: "Default delay hours for clouds/regions/azs without predefined delay hours."
     type: int
     default: 0
-  auth.sso.enabled:
-    default: false
-    description: |
-      Note: Currently not available for on-prem users!
-
-      Whether or not OIDCSSO authentication should be enabled.
-    type: boolean
-  auth.sso.teams:
-    default: ""
-    description: |
-      Note: Currently not available for on-prem users!
-
-      A list of comma separated launchpad teams that are allowed access
-      when connecting to the admin tool by OIDCSSO authentication.
-    type: string
-  auth.sso.url:
-    description: |
-      URL to access for SSO auth.
-    type: string
-  auth.sso.public-key:
-    description: Public key for the auth server
-    type: string
   auth.basic.enabled:
     default: false
     description: |
@@ -140,7 +118,6 @@ options:
     description: |
       Preferred, Juju-secret-backed alternative to contracts.user/contracts.password/
       contracts.ca: any key set here takes priority over its plain-text counterpart above.
-
       Must be set to the URI of a Juju secret with (as applicable) `user`, `password`
       and `ca` keys, e.g.:
         juju add-secret livepatch-contracts-credentials user=<user> password=<password>
@@ -563,32 +540,6 @@ options:
   machine-reports.database.cleanup-interval:
     default: 6h
     description: Time between report cleanup runs.
-    type: string
-  machine-reports.event-bus.enabled:
-    default: false
-    description: Whether or not to enable machine reports writes to kafka.
-    type: boolean
-  machine-reports.event-bus.brokers:
-    default: ""
-    description: The list of kafka brokers, comma separated to use for pushing reports.
-    type: string
-  machine-reports.event-bus.client-cert:
-    default: ""
-    description: The X509 client certificate to use for mTLS authorisation.
-    type: string
-  machine-reports.event-bus.client-key:
-    default: ""
-    description: The X509 private key associated with the client certificate to use for mTLS authorisation.
-    type: string
-  machine-reports.event-bus.ca-cert:
-    default: ""
-    description: The X509 intermediate or root certificate authority certificate to use for mTLS authorisation.
-    type: string
-  machine-reports.event-bus.kafka-version:
-    default: ""
-    description: |
-      The kafka version you wish to specifically bind to, when not provided, 
-      the kafka version is not validated.
     type: string
   kpi-reports.enabled:
     default: ""
