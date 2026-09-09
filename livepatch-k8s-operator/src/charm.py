@@ -28,6 +28,7 @@ import paas_charm.app
 import paas_charm.go
 import pgsql
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequiresEvent
+from paas_charm.utils import config_get_with_secret
 from charms.nginx_ingress_integrator.v0.nginx_route import require_nginx_route
 from paas_charm.databases import PaaSDatabaseRequires
 
@@ -56,6 +57,50 @@ RESOURCE_TOKEN_SECRET_LABEL = "patch-sync-resource-token"
 # Juju secret label used to persist the legacy (pgsql interface) database
 # connection string. Same reasoning as RESOURCE_TOKEN_SECRET_LABEL above.
 LEGACY_DB_SECRET_LABEL = "legacy-database-connection-string"
+# The key under which a `type: secret` config option or the `contract-token`
+# action param's value is expected to be stored in the secret's content, for
+# options that hold a single, standalone value.
+SECRET_VALUE_KEY = "value"  # nosec B105
+
+# Standalone config options with a preferred, Juju-secret-backed sibling: the
+# secret (if set) takes priority over the deprecated plain-text option. Keyed
+# by the plain option's `user_defined_config` key form (dashes underscored,
+# dots preserved), mapping to its secret sibling's key form and the `LP_*`
+# env var both ultimately feed.
+SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
+    "auth.basic.users": ("auth.basic.users_secret", "LP_AUTH_BASIC_USERS"),
+    "patch_storage.swift_api_key": ("patch_storage.swift_api_key_secret", "LP_PATCH_STORAGE_SWIFT_API_KEY"),
+    "patch_storage.gcs_credentials_json": (
+        "patch_storage.gcs_credentials_json_secret",
+        "LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON",
+    ),
+    "patch_storage.ibm_api_key": ("patch_storage.ibm_api_key_secret", "LP_PATCH_STORAGE_IBM_API_KEY"),
+    "patch_sync.token": ("patch_sync.token_secret", "LP_PATCH_SYNC_TOKEN"),
+}
+
+# Config options that bundle several related, deprecated plain-text options
+# into a single preferred Juju secret (so operators only have to manage one
+# secret per group). Keyed by the secret's `user_defined_config` key form,
+# mapping each expected secret content key to the plain option's key form and
+# the `LP_*` env var both ultimately feed.
+SECRET_GROUP_ENV_VARS: dict[str, dict[str, tuple[str, str]]] = {
+    "contracts.credentials": {
+        "user": ("contracts.user", "LP_CONTRACTS_USER"),
+        "password": ("contracts.password", "LP_CONTRACTS_PASSWORD"),
+    },
+    "patch_storage.s3_credentials": {
+        "access-key": ("patch_storage.s3_access_key", "LP_PATCH_STORAGE_S3_ACCESS_KEY"),
+        "secret-key": ("patch_storage.s3_secret_key", "LP_PATCH_STORAGE_S3_SECRET_KEY"),
+    },
+    "patch_storage.azure_credentials": {
+        "account-key": ("patch_storage.azure_account_key", "LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY"),
+        "connection-string": (
+            "patch_storage.azure_connection_string",
+            "LP_PATCH_STORAGE_AZURE_CONNECTION_STRING",
+        ),
+        "client-secret": ("patch_storage.azure_client_secret", "LP_PATCH_STORAGE_AZURE_CLIENT_SECRET"),
+    },
+}
 
 
 def _encode(value: object) -> str:
@@ -67,9 +112,30 @@ def _encode(value: object) -> str:
     Returns:
         A string representation suitable for an `LP_*` environment variable.
     """
+    if isinstance(value, dict):
+        value = value.get(SECRET_VALUE_KEY, "")
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _resolve_secret_config(
+    charm: ops.CharmBase, key: str, content_key: str = SECRET_VALUE_KEY
+) -> typing.Optional[str]:
+    """Resolve a `type: secret` config option to a given key in its content.
+
+    Args:
+        charm: the charm to read the config option from.
+        key: the config option name.
+        content_key: the secret content key to read.
+
+    Returns:
+        The secret's `content_key` content, or None if unset or inaccessible.
+    """
+    value = config_get_with_secret(charm, key)
+    if isinstance(value, ops.Secret):
+        return value.get_content(refresh=True).get(content_key)
+    return typing.cast(typing.Optional[str], value)
 
 
 class LivepatchApp(paas_charm.app.App):
@@ -90,10 +156,37 @@ class LivepatchApp(paas_charm.app.App):
 
         charm = self._charm  # type: ignore[attr-defined]
 
+        user_defined_config = dict(self._charm_state.user_defined_config)
+
+        # Expand credential-group secrets into their individual `LP_*` env
+        # vars, falling back to each sub-key's deprecated plain-text option
+        # when the secret doesn't provide it, before the generic transform runs.
+        group_env: dict[str, str] = {}
+        for group_key, sub_keys in SECRET_GROUP_ENV_VARS.items():
+            content = user_defined_config.pop(group_key, None)
+            for content_key, (plain_key, env_name) in sub_keys.items():
+                plain_value = user_defined_config.pop(plain_key, None)
+                value = content.get(content_key) if isinstance(content, dict) else None
+                if not value:
+                    value = plain_value
+                if value:
+                    group_env[env_name] = _encode(value)
+
+        # Same idea for standalone options with a preferred secret sibling.
+        for plain_key, (secret_key, env_name) in SECRET_FALLBACK_ENV_VARS.items():
+            secret_content = user_defined_config.pop(secret_key, None)
+            plain_value = user_defined_config.pop(plain_key, None)
+            value = secret_content.get(SECRET_VALUE_KEY) if isinstance(secret_content, dict) else None
+            if not value:
+                value = plain_value
+            if value:
+                group_env[env_name] = _encode(value)
+
         lp_env: dict[str, str] = {
             "LP_" + k.replace("-", "_").replace(".", "_").upper(): _encode(v)
-            for k, v in self._charm_state.user_defined_config.items()
+            for k, v in user_defined_config.items()
         }
+        lp_env.update(group_env)
         lp_env["LP_SERVER_IS_LEADER"] = _encode(charm.unit.is_leader())
         lp_env["LIVEPATCH_CONFIG_LOCATION"] = "/etc/livepatch.yaml"
         lp_env["LP_SERVER_SERVER_ADDRESS"] = f":{self._workload_config.port}"
@@ -360,14 +453,17 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             container: the workload container; the caller must ensure it can connect.
         """
-        if not self.config.get("contracts.ca"):
+        contracts_ca = _resolve_secret_config(self, "contracts.credentials", content_key="ca")
+        if not contracts_ca:
+            contracts_ca = self.config.get("contracts.ca")
+        if not contracts_ca:
             logger.debug("ca config not set")
             return
 
         try:
-            cert = b64decode(self.config.get("contracts.ca")).decode("utf8")
+            cert = b64decode(contracts_ca).decode("utf8")
         except Exception:  # noqa: BLE001 - malformed config shouldn't crash the charm
-            logger.error("failed to parse base64 value of `contracts.ca` config option")
+            logger.error("failed to parse base64 value of the `ca` key in `contracts.credentials`/`contracts.ca`")
             return
 
         container.push(TRUSTED_CA_FILENAME, cert, make_dirs=True)
@@ -460,7 +556,7 @@ class LivepatchCharm(paas_charm.go.Charm):
             event.fail("cannot fetch the resource token: unit is not the leader")
             return
 
-        if self.config.get("patch-sync.token"):
+        if self.config.get("patch-sync.token") or self.config.get("patch-sync.token-secret"):
             event.fail(
                 "patch-sync.token is already set. It should be unset before setting a resource token"
             )
@@ -473,9 +569,32 @@ class LivepatchCharm(paas_charm.go.Charm):
             )
             return
 
-        contract_token = event.params.get("contract-token", "")
+        contract_token_secret_id = event.params.get("contract-token-secret", "")
+        contract_token = ""
+        if contract_token_secret_id:
+            try:
+                contract_token_secret = self.model.get_secret(id=contract_token_secret_id)
+            except ops.SecretNotFoundError:
+                event.fail(
+                    "cannot fetch the resource token: could not access the `contract-token-secret` "
+                    f"secret. Run `juju grant-secret <secret> {self.app.name}` and try again."
+                )
+                return
+            contract_token = contract_token_secret.get_content(refresh=True).get(SECRET_VALUE_KEY) or ""
+            if not contract_token:
+                event.fail(
+                    "cannot fetch the resource token: the secret must have a "
+                    f"`{SECRET_VALUE_KEY}` key with the contract token"
+                )
+                return
+        else:
+            contract_token = event.params.get("contract-token", "")
+
         if not contract_token:
-            event.fail("cannot fetch the resource token: no contract token provided")
+            event.fail(
+                "cannot fetch the resource token: no contract token provided (use "
+                "`contract-token-secret` (preferred) or `contract-token`)"
+            )
             return
 
         proxies = utils.get_proxy_dict(self.config)

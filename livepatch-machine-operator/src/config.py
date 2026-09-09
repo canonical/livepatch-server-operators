@@ -20,6 +20,8 @@ from base64 import b64decode
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+import ops
+
 logger = logging.getLogger(__name__)
 
 # Prefix under which the whole charm configuration is stored in snap config.
@@ -44,9 +46,128 @@ KEY_CONTRACTS_PASSWORD = "contracts.password"  # nosec B105
 KEY_AUTH_BASIC_ENABLED = "auth.basic.enabled"
 KEY_AUTH_BASIC_USERS = "auth.basic.users"
 
+# The key under which a `type: secret` config option's value is expected to
+# be stored in the secret's content, for options that hold a single,
+# standalone value.
+SECRET_VALUE_KEY = "value"  # nosec B105
+
+# Standalone config options with a preferred, Juju-secret-backed sibling: the
+# secret (if set) takes priority over the deprecated plain-text option, which
+# is otherwise kept as-is (already correctly present in `raw`). Maps the plain
+# option's raw config key to its secret sibling's raw config key.
+SECRET_FALLBACK_OPTIONS: Dict[str, str] = {
+    KEY_AUTH_BASIC_USERS: "auth.basic.users-secret",
+    "patch-storage.swift-api-key": "patch-storage.swift-api-key-secret",
+    "patch-storage.gcs-credentials-json": "patch-storage.gcs-credentials-json-secret",
+    "patch-storage.ibm-api-key": "patch-storage.ibm-api-key-secret",
+    "patch-sync.token": "patch-sync.token-secret",
+    "influx.token": "influx.token-secret",
+}
+
+# Juju config option names for the consolidated credential-group secrets.
+OPT_CONTRACTS_CREDENTIALS = "contracts.credentials"
+OPT_PATCH_STORAGE_S3_CREDENTIALS = "patch-storage.s3-credentials"
+OPT_PATCH_STORAGE_AZURE_CREDENTIALS = "patch-storage.azure-credentials"
+
+# Config options that bundle several related, deprecated plain-text options
+# into a single preferred Juju secret (so operators only have to manage one
+# secret per group), keyed by the consolidated Juju config option name and
+# mapping each expected secret content key to the individual raw config key
+# it expands into (the keys the rest of the charm/snap config already expect,
+# and which are otherwise kept as-is when the secret doesn't provide a key).
+SECRET_GROUPS: Dict[str, Dict[str, str]] = {
+    OPT_CONTRACTS_CREDENTIALS: {
+        "user": KEY_CONTRACTS_USER,
+        "password": KEY_CONTRACTS_PASSWORD,
+        "ca": OPT_CONTRACTS_CA,
+    },
+    OPT_PATCH_STORAGE_S3_CREDENTIALS: {
+        "access-key": "patch-storage.s3-access-key",
+        "secret-key": "patch-storage.s3-secret-key",
+    },
+    OPT_PATCH_STORAGE_AZURE_CREDENTIALS: {
+        "account-key": "patch-storage.azure-account-key",
+        "connection-string": "patch-storage.azure-connection-string",
+        "client-secret": "patch-storage.azure-client-secret",
+    },
+}
+
 
 class InvalidCharmConfigError(Exception):
     """Raised when the charm configuration fails validation."""
+
+
+def _get_secret_content(charm: Any, key: str, secret_id: str) -> Dict[str, Any]:
+    """Fetch the content of the Juju secret configured for a given option.
+
+    Args:
+        charm: the charm whose secret should be fetched.
+        key: the config option name the secret is configured for, for errors.
+        secret_id: the secret URI configured for the option.
+
+    Returns:
+        The secret's content.
+
+    Raises:
+        InvalidCharmConfigError: if the secret is inaccessible.
+    """
+    try:
+        secret = charm.model.get_secret(id=secret_id)
+        return secret.get_content(refresh=True)
+    except ops.SecretNotFoundError as exc:
+        raise InvalidCharmConfigError(
+            f"✘ could not access the secret configured for `{key}`; run "
+            f"`juju grant-secret <secret> {charm.app.name}` and try again."
+        ) from exc
+
+
+def _resolve_secret_options(charm: Any, raw: Dict[str, Any]) -> None:
+    """Resolve preferred `type: secret` config options in-place, over their
+    deprecated plain-text counterparts.
+
+    Standalone secrets (`SECRET_FALLBACK_OPTIONS`) overwrite the corresponding
+    plain option's raw value when set; otherwise the plain option's existing
+    raw value (already in `raw`) is left untouched. Credential-group secrets
+    (`SECRET_GROUPS`) are popped and, when set, expanded into the individual
+    raw config keys they represent; unset sub-keys leave the plain option's
+    existing raw value untouched.
+
+    Args:
+        charm: the charm whose secrets should be resolved.
+        raw: the raw Juju configuration mapping, mutated in-place.
+
+    Raises:
+        InvalidCharmConfigError: if a configured secret is inaccessible.
+    """
+    for plain_key, secret_key in SECRET_FALLBACK_OPTIONS.items():
+        secret_id = raw.pop(secret_key, None)
+        if not secret_id:
+            continue
+        content = _get_secret_content(charm, secret_key, secret_id)
+        value = content.get(SECRET_VALUE_KEY)
+        if value is not None:
+            raw[plain_key] = value
+
+    for group_key, sub_keys in SECRET_GROUPS.items():
+        secret_id = raw.pop(group_key, None)
+        if not secret_id:
+            continue
+        content = _get_secret_content(charm, group_key, secret_id)
+        for content_key, target_key in sub_keys.items():
+            value = content.get(content_key)
+            if value is not None:
+                raw[target_key] = value
+
+    for group_key, sub_keys in SECRET_GROUPS.items():
+        secret_id = raw.pop(group_key, None)
+        if not secret_id:
+            continue
+        content = _get_secret_content(charm, group_key, secret_id)
+        for content_key, target_key in sub_keys.items():
+            value = content.get(content_key)
+            if value is not None:
+                raw[target_key] = value
+
 
 
 def parse_server_port(server_address: Optional[str]) -> Optional[str]:
@@ -128,6 +249,7 @@ class CharmConfig:
             InvalidCharmConfigError: if a required option is unset or malformed.
         """
         raw: Dict[str, Any] = {**charm.config}
+        _resolve_secret_options(charm, raw)
 
         url_template = str(raw.get(OPT_URL_TEMPLATE) or "")
         if not url_template:
