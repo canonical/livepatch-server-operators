@@ -133,8 +133,9 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
 
     This action does not change the server's configuration. It bcrypt-hashes
     the given passwords and returns the resulting values.
-    It also displays the commands needed to apply the hashed values to the
-    `auth.basic.users` config option, which holds a Juju secret URI.
+    It also displays the commands needed to apply the hashed values, preferably
+    via the `auth.basic.users-secret` Juju secret URI option, or via the
+    deprecated plaintext `auth.basic.users` option.
 
     Set `append=true` to combine the new users with the ones already present
     in `auth.basic.users`/`auth.basic.users-secret`, instead of replacing them.
@@ -179,9 +180,15 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
             return
         combined_users = f"{existing_users},{','.join(hashed_users)}"
         if existing_secret_id:
-            command = f"juju update-secret {existing_secret_id} {SECRET_VALUE_KEY}='{combined_users}'"
+            command = (
+                f"juju update-secret {existing_secret_id} {SECRET_VALUE_KEY}='{combined_users}' && "
+                f"juju config {self.app.name} {KEY_AUTH_BASIC_ENABLED}=true"
+            )
         else:
-            command = f"juju config {self.app.name} {KEY_AUTH_BASIC_USERS}='{combined_users}'"
+            command = (
+                f"juju config {self.app.name} {KEY_AUTH_BASIC_USERS}='{combined_users}' "
+                f"{KEY_AUTH_BASIC_ENABLED}=true"
+            )
     else:
         combined_users = ",".join(hashed_users)
         command = (
