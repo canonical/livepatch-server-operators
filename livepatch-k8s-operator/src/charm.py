@@ -89,6 +89,7 @@ SECRET_GROUP_ENV_VARS: dict[str, dict[str, tuple[str, str]]] = {
     "contracts.credentials_secret": {
         "user": ("contracts.user", "LP_CONTRACTS_USER"),
         "password": ("contracts.password", "LP_CONTRACTS_PASSWORD"),
+        "ca": ("contracts.ca", "LP_CONTRACTS_CA"),
     },
     "patch_storage.s3_credentials_secret": {
         "access-key": ("patch_storage.s3_access_key", "LP_PATCH_STORAGE_S3_ACCESS_KEY"),

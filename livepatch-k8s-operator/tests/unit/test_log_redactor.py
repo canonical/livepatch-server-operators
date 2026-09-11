@@ -137,6 +137,12 @@ class TestRedactFunction(unittest.TestCase):
         self.assertIn(_REDACTED, result)
         self.assertNotIn("tok123", result)
 
+    def test_lp_influx_token_redacted(self):
+        """LP_INFLUX_TOKEN env-var assignment has its value redacted."""
+        result = _redact("LP_INFLUX_TOKEN=tok123")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("tok123", result)
+
     def test_lp_database_connection_string_redacted(self):
         """LP_DATABASE_CONNECTION_STRING env-var assignment has its value redacted."""
         result = _redact("LP_DATABASE_CONNECTION_STRING=postgresql://u:p@h/db")
