@@ -194,28 +194,6 @@ config:
           juju grant-secret livepatch-basic-users canonical-livepatch-server-k8s
           juju config canonical-livepatch-server-k8s auth.basic.users-secret=<secret-uri>
       type: secret
-    auth.sso.enabled:
-      default: false
-      description: |
-        Note: Currently not available for on-prem users!
-
-        Whether or not OIDCSSO authentication should be enabled.
-      type: boolean
-    auth.sso.teams:
-      default: ""
-      description: |
-        Note: Currently not available for on-prem users!
-
-        A list of comma separated launchpad teams that are allowed access
-        when connecting to the admin tool by SSO authentication.
-      type: string
-    auth.sso.url:
-      description: |
-        URL to access for SSO auth.
-      type: string
-    auth.sso.public-key:
-      description: Public key for the auth server
-      type: string
     auth.oauth.enabled:
       default: false
       description: |
