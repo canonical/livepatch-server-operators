@@ -196,12 +196,18 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
             )
     else:
         combined_users = ",".join(hashed_users)
-        command = (
-            f"juju add-secret livepatch-basic-users {SECRET_VALUE_KEY}='{combined_users}' && "
-            f"juju grant-secret livepatch-basic-users {self.app.name} && "
-            f"juju config {self.app.name} {SECRET_FALLBACK_OPTIONS[KEY_AUTH_BASIC_USERS]}=<secret-uri-from-add-secret> "
-            f"{KEY_AUTH_BASIC_ENABLED}=true"
-        )
+        if existing_secret_id:
+            command = (
+                f"juju update-secret {existing_secret_id} {SECRET_VALUE_KEY}='{combined_users}' && "
+                f"juju config {self.app.name} {KEY_AUTH_BASIC_ENABLED}=true"
+            )
+        else:
+            command = (
+                f"juju add-secret livepatch-basic-users {SECRET_VALUE_KEY}='{combined_users}' && "
+                f"juju grant-secret livepatch-basic-users {self.app.name} && "
+                f"juju config {self.app.name} {SECRET_FALLBACK_OPTIONS[KEY_AUTH_BASIC_USERS]}=<secret-uri-from-add-secret> "
+                f"{KEY_AUTH_BASIC_ENABLED}=true"
+            )
 
     event.log("Apply the hashed users by running:")
     event.log(command)

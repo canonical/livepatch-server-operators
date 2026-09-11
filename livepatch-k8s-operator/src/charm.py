@@ -28,6 +28,7 @@ import paas_charm.app
 import paas_charm.go
 import pgsql
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequiresEvent
+from paas_charm.exceptions import CharmConfigInvalidError
 from paas_charm.utils import config_get_with_secret
 from charms.nginx_ingress_integrator.v0.nginx_route import require_nginx_route
 from paas_charm.databases import PaaSDatabaseRequires
@@ -131,17 +132,28 @@ def _resolve_secret_config(
         content_key: the secret content key to read.
 
     Returns:
-        The secret's `content_key` content, or None if unset or inaccessible.
+        The `content_key` content, or None if the option is unset or the
+        secret doesn't provide that key.
+
+    Raises:
+        CharmConfigInvalidError: if the option is set to a secret URI that is
+            inaccessible (as opposed to simply unset).
     """
     try:
         value = config_get_with_secret(charm, key)
-    except ops.SecretNotFoundError:
-        return None
+    except ops.SecretNotFoundError as exc:
+        raise CharmConfigInvalidError(
+            f"could not access the secret configured for `{key}`; run "
+            f"`juju grant-secret <secret> {charm.app.name}` and try again."
+        ) from exc
     if isinstance(value, ops.Secret):
         try:
             return value.get_content(refresh=True).get(content_key)
-        except ops.SecretNotFoundError:
-            return None
+        except ops.SecretNotFoundError as exc:
+            raise CharmConfigInvalidError(
+                f"could not access the secret configured for `{key}`; run "
+                f"`juju grant-secret <secret> {charm.app.name}` and try again."
+            ) from exc
     return typing.cast(typing.Optional[str], value)
 
 
@@ -174,7 +186,7 @@ class LivepatchApp(paas_charm.app.App):
             for content_key, (plain_key, env_name) in sub_keys.items():
                 plain_value = user_defined_config.pop(plain_key, None)
                 value = content.get(content_key) if isinstance(content, dict) else None
-                if not value:
+                if value is None:
                     value = plain_value
                 if value:
                     group_env[env_name] = _encode(value)
@@ -184,7 +196,7 @@ class LivepatchApp(paas_charm.app.App):
             secret_content = user_defined_config.pop(secret_key, None)
             plain_value = user_defined_config.pop(plain_key, None)
             value = secret_content.get(SECRET_VALUE_KEY) if isinstance(secret_content, dict) else None
-            if not value:
+            if value is None:
                 value = plain_value
             if value:
                 group_env[env_name] = _encode(value)
@@ -320,7 +332,11 @@ class LivepatchCharm(paas_charm.go.Charm):
             rerun_migrations: whether it is necessary to run the migrations again.
         """
         if self._container.can_connect():
-            self._update_trusted_ca_certs(self._container)
+            try:
+                self._update_trusted_ca_certs(self._container)
+            except CharmConfigInvalidError as exc:
+                self.update_app_and_unit_status(ops.BlockedStatus(str(exc)))
+                return
         super().restart(rerun_migrations=rerun_migrations)
 
     def _create_app(self) -> paas_charm.app.App:
@@ -459,9 +475,13 @@ class LivepatchCharm(paas_charm.go.Charm):
 
         Args:
             container: the workload container; the caller must ensure it can connect.
+
+        Raises:
+            CharmConfigInvalidError: if `contracts.credentials-secret` is set
+                to an inaccessible secret URI.
         """
         contracts_ca = _resolve_secret_config(self, "contracts.credentials-secret", content_key="ca")
-        if not contracts_ca:
+        if contracts_ca is None:
             contracts_ca = self.config.get("contracts.ca")
         if not contracts_ca:
             logger.debug("ca config not set")
@@ -582,13 +602,13 @@ class LivepatchCharm(paas_charm.go.Charm):
         if contract_token_secret_id:
             try:
                 contract_token_secret = self.model.get_secret(id=contract_token_secret_id)
+                contract_token = contract_token_secret.get_content(refresh=True).get(SECRET_VALUE_KEY) or ""
             except ops.SecretNotFoundError:
                 event.fail(
                     "cannot fetch the resource token: could not access the `contract-token-secret` "
                     f"secret. Run `juju grant-secret <secret> {self.app.name}` and try again."
                 )
                 return
-            contract_token = contract_token_secret.get_content(refresh=True).get(SECRET_VALUE_KEY) or ""
             if not contract_token:
                 event.fail(
                     "cannot fetch the resource token: the secret must have a "
