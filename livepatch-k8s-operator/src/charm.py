@@ -192,12 +192,19 @@ class LivepatchApp(paas_charm.app.App):
                 if value:
                     group_env[env_name] = _encode(value)
 
-        # Same idea for standalone options with a preferred secret sibling.
+        # Same idea for standalone options with a preferred secret sibling. A
+        # configured secret missing the `value` key is a misconfiguration, not
+        # an absence, so it must not silently fall back to the plaintext option.
         for plain_key, (secret_key, env_name) in SECRET_FALLBACK_ENV_VARS.items():
             secret_content = user_defined_config.pop(secret_key, None)
             plain_value = user_defined_config.pop(plain_key, None)
-            value = secret_content.get(SECRET_VALUE_KEY) if isinstance(secret_content, dict) else None
-            if value is None:
+            if isinstance(secret_content, dict):
+                value = secret_content.get(SECRET_VALUE_KEY)
+                if value is None:
+                    raise CharmConfigInvalidError(
+                        f"the secret configured for `{secret_key}` must have a `{SECRET_VALUE_KEY}` key"
+                    )
+            else:
                 value = plain_value
             if value:
                 group_env[env_name] = _encode(value)
