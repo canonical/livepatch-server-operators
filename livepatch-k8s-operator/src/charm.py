@@ -85,15 +85,15 @@ SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
 # mapping each expected secret content key to the plain option's key form and
 # the `LP_*` env var both ultimately feed.
 SECRET_GROUP_ENV_VARS: dict[str, dict[str, tuple[str, str]]] = {
-    "contracts.credentials": {
+    "contracts.credentials_secret": {
         "user": ("contracts.user", "LP_CONTRACTS_USER"),
         "password": ("contracts.password", "LP_CONTRACTS_PASSWORD"),
     },
-    "patch_storage.s3_credentials": {
+    "patch_storage.s3_credentials_secret": {
         "access-key": ("patch_storage.s3_access_key", "LP_PATCH_STORAGE_S3_ACCESS_KEY"),
         "secret-key": ("patch_storage.s3_secret_key", "LP_PATCH_STORAGE_S3_SECRET_KEY"),
     },
-    "patch_storage.azure_credentials": {
+    "patch_storage.azure_credentials_secret": {
         "account-key": ("patch_storage.azure_account_key", "LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY"),
         "connection-string": (
             "patch_storage.azure_connection_string",
@@ -460,7 +460,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             container: the workload container; the caller must ensure it can connect.
         """
-        contracts_ca = _resolve_secret_config(self, "contracts.credentials", content_key="ca")
+        contracts_ca = _resolve_secret_config(self, "contracts.credentials-secret", content_key="ca")
         if not contracts_ca:
             contracts_ca = self.config.get("contracts.ca")
         if not contracts_ca:
@@ -470,7 +470,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         try:
             cert = b64decode(contracts_ca).decode("utf8")
         except Exception:  # noqa: BLE001 - malformed config shouldn't crash the charm
-            logger.error("failed to parse base64 value of the `ca` key in `contracts.credentials`/`contracts.ca`")
+            logger.error("failed to parse base64 value of the `ca` key in `contracts.credentials-secret`/`contracts.ca`")
             return
 
         container.push(TRUSTED_CA_FILENAME, cert, make_dirs=True)

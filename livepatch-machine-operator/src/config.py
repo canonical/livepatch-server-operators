@@ -65,9 +65,9 @@ SECRET_FALLBACK_OPTIONS: Dict[str, str] = {
 }
 
 # Juju config option names for the consolidated credential-group secrets.
-OPT_CONTRACTS_CREDENTIALS = "contracts.credentials"
-OPT_PATCH_STORAGE_S3_CREDENTIALS = "patch-storage.s3-credentials"
-OPT_PATCH_STORAGE_AZURE_CREDENTIALS = "patch-storage.azure-credentials"
+OPT_CONTRACTS_CREDENTIALS = "contracts.credentials-secret"
+OPT_PATCH_STORAGE_S3_CREDENTIALS = "patch-storage.s3-credentials-secret"
+OPT_PATCH_STORAGE_AZURE_CREDENTIALS = "patch-storage.azure-credentials-secret"
 
 # Config options that bundle several related, deprecated plain-text options
 # into a single preferred Juju secret (so operators only have to manage one

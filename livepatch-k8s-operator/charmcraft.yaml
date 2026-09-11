@@ -291,14 +291,14 @@ config:
         Username to authenticate with backend contracts service.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting
-        the `user` key of contracts.credentials to a Juju secret instead.
+        the `user` key of contracts.credentials-secret to a Juju secret instead.
       type: string
     contracts.password:
       description: |
         Password to authenticate with backend contracts service.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting
-        the `password` key of contracts.credentials to a Juju secret instead.
+        the `password` key of contracts.credentials-secret to a Juju secret instead.
       type: string
     contracts.ca:
       description: |
@@ -308,10 +308,10 @@ config:
         as a config option in a Juju CLI invocation.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting
-        the `ca` key of contracts.credentials to a Juju secret instead.
+        the `ca` key of contracts.credentials-secret to a Juju secret instead.
       type: string
       default: ""
-    contracts.credentials:
+    contracts.credentials-secret:
       description: |
         Preferred, Juju-secret-backed alternative to contracts.user/contracts.password/
         contracts.ca: any key set here takes priority over its plain-text counterpart above.
@@ -320,7 +320,7 @@ config:
         and `ca` keys, e.g.:
           juju add-secret livepatch-contracts-credentials user=<user> password=<password>
           juju grant-secret livepatch-contracts-credentials canonical-livepatch-server-k8s
-          juju config canonical-livepatch-server-k8s contracts.credentials=<secret-uri>
+          juju config canonical-livepatch-server-k8s contracts.credentials-secret=<secret-uri>
 
         `ca` is a base64-encoded certificate of the CA that issued the certificate of the
         contracts service (base64 of "-----BEGIN" to "-----END").
@@ -467,7 +467,7 @@ config:
         separately for the workload's service account; otherwise, these keys must be set.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting the
-        `access-key` key of patch-storage.s3-credentials to a Juju secret instead.
+        `access-key` key of patch-storage.s3-credentials-secret to a Juju secret instead.
       type: string
     patch-storage.s3-secret-key:
       default: ""
@@ -475,9 +475,9 @@ config:
         AWS programmatic API secret key, used together with patch-storage.s3-access-key.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting the
-        `secret-key` key of patch-storage.s3-credentials to a Juju secret instead.
+        `secret-key` key of patch-storage.s3-credentials-secret to a Juju secret instead.
       type: string
-    patch-storage.s3-credentials:
+    patch-storage.s3-credentials-secret:
       description: |
         Preferred, Juju-secret-backed alternative to patch-storage.s3-access-key/
         patch-storage.s3-secret-key: any key set here takes priority over its plain-text
@@ -544,7 +544,7 @@ config:
       default: ""
       description: |
         The Azure Storage account name. Required unless the `connection-string` key of
-        patch-storage.azure-credentials is set, which already carries the account name and key.
+        patch-storage.azure-credentials-secret is set, which already carries the account name and key.
       type: string
     patch-storage.azure-account-key:
       default: ""
@@ -553,7 +553,7 @@ config:
         shared key authentication.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting the
-        `account-key` key of patch-storage.azure-credentials to a Juju secret instead.
+        `account-key` key of patch-storage.azure-credentials-secret to a Juju secret instead.
       type: string
     patch-storage.azure-connection-string:
       default: ""
@@ -562,9 +562,9 @@ config:
         patch-storage.azure-account-name/patch-storage.azure-account-key for authentication.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting the
-        `connection-string` key of patch-storage.azure-credentials to a Juju secret instead.
+        `connection-string` key of patch-storage.azure-credentials-secret to a Juju secret instead.
       type: string
-    patch-storage.azure-credentials:
+    patch-storage.azure-credentials-secret:
       description: |
         Preferred, Juju-secret-backed alternative to patch-storage.azure-account-key/
         patch-storage.azure-connection-string/patch-storage.azure-client-secret: any key set
@@ -579,7 +579,7 @@ config:
       default: ""
       description: |
         The Entra ID (Azure AD) tenant ID, used together with patch-storage.azure-client-id and
-        the `client-secret` key of patch-storage.azure-credentials for service principal
+        the `client-secret` key of patch-storage.azure-credentials-secret for service principal
         authentication.
       type: string
     patch-storage.azure-client-id:
@@ -592,13 +592,13 @@ config:
         The Entra ID (Azure AD) service principal's client secret.
 
         Deprecated: this option is stored in plain text in Juju's config; prefer setting the
-        `client-secret` key of patch-storage.azure-credentials to a Juju secret instead.
+        `client-secret` key of patch-storage.azure-credentials-secret to a Juju secret instead.
       type: string
     patch-storage.azure-managed-identity-client-id:
       default: ""
       description: |
         When patch-storage.azure-account-name, the `connection-string` key of
-        patch-storage.azure-credentials, and the service principal fields are all omitted,
+        patch-storage.azure-credentials-secret, and the service principal fields are all omitted,
         a managed identity is used instead. Note that this workload runs in a pod, not a VM,
         so a VM-bound managed identity is not available unless Entra Workload ID federation
         has been configured separately for the workload's service account; this option then
