@@ -257,6 +257,7 @@ config:
       default: ""
       description: A comma separated list of domains, IP CIDRs and/or ports to block when querying the OAuth provider.
       type: string
+
     contracts.enabled:
       description: Whether use of the contracts service is enabled.
       type: boolean
@@ -347,11 +348,7 @@ config:
     patch-storage.type:
       default: filesystem
       description: |
-        The storage type to be used by the charm, defaults to filesystem.
-        The path can be located under:
-          /var/snap/canonical-livepatch-server/common/patches
-
-        The available options are:
+        The storage backend type for patches. Available options are:
           - filesystem
           - swift
           - postgres
@@ -361,11 +358,13 @@ config:
           - ibm
           - oracle
 
-        When using postgres for storage, the charm will work automatically by means of relation.
-        The default database name is under:
-          livepatch
+        When using "postgres" for storage, the charm uses the database relation
+        automatically with the default database name "livepatch". A custom
+        database may be specified via patch-storage.postgres-connection-string
+        but must be created manually.
 
-        The database name can be changed but must be created.
+        When using "filesystem", patches are stored at the path configured in
+        patch-storage.filesystem-path.
       type: string
     patch-storage.filesystem-path:
       default: "/var/lib/livepatch/patches"
@@ -893,15 +892,6 @@ config:
       description: "Organization name"
       type: string
 
-    cloud_delay.enabled:
-      description: "[DEPRECATED] Whether to enable the delayed roll-out of patches based on a client's cloud. The cloud delay feature is deprecated and is no longer supported."
-      type: boolean
-      default: false
-    cloud_delay.default_delay_hours:
-      description: "[DEPRECATED] Default delay hours for clouds/regions/azs without predefined delay hours. The cloud delay feature is deprecated and is no longer supported."
-      type: int
-      default: 0
-
     profiler.enabled:
       description: >
         Whether to enable or disable continuous profiling on the server or not.
@@ -955,7 +945,38 @@ config:
       default: false
       type: boolean
 
+    ###########
+    # Tracing #
+    ###########
+    tracing.enabled:
+      default: false
+      description: Whether to enable OpenTelemetry tracing. This is a manual toggle and is independent of any charm relation.
+      type: boolean
+    tracing.service-name:
+      default: "livepatch-server"
+      description: Service name reported in traces.
+      type: string
+    tracing.sample-rate:
+      default: 1.0
+      description: Fraction of traces to sample (0.0 to 1.0).
+      type: float
+
+    ################
+    # OTLP Metrics #
+    ################
     otel-metrics.enabled:
       default: false
       description: Whether or not to enable pushing OTLP metrics (requires the send-otlp relation).
       type: boolean
+    otel-metrics.service-name:
+      default: "livepatch-server"
+      description: Service name reported in OTLP metrics.
+      type: string
+    otel-metrics.export-interval:
+      default: "60s"
+      description: How often metrics are exported (e.g. "60s", "1m").
+      type: string
+    otel-metrics.export-timeout:
+      default: "30s"
+      description: Timeout for each metrics export attempt (e.g. "30s").
+      type: string

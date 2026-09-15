@@ -27,6 +27,7 @@ from ops.charm import CharmBase, CollectStatusEvent
 
 import relations
 from config import OPT_SERVER_ADDRESS, parse_server_port
+from log_redactor import setup_log_redaction
 from reconciler import MachineReconciler
 from relations import (
     DATABASE_NAME,
@@ -103,6 +104,7 @@ class OperatorMachineCharm(CharmBase):
     def __init__(self, *args) -> None:
         """Init function."""
         super().__init__(*args)
+        setup_log_redaction()
 
         # Peer relation backed state. The application-scoped store holds values
         # shared by every unit; the unit-scoped store holds per-unit values.

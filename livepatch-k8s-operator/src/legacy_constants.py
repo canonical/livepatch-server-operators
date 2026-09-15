@@ -85,9 +85,6 @@ CONFIG_MAP = {
     "profiler_sample_rate": "profiler.sample_rate",
     "profiler_server_address": "profiler.server_address",
     "profiler_upload_rate": "profiler.upload_rate",
-    # Cloud delay (no longer used)
-    "cloud_delay_default_delay_hours": None,
-    "is_cloud_delay_enabled": None,
 }
 # Additional config map for enabling certain features based on if a value is set.
 ADDITIONAL_CONFIG_MAP = {
