@@ -8,14 +8,47 @@ from typing import Tuple
 
 from constants.errors import SCHEMA_VERSION_CHECK_ERROR
 from constants.snap import (
+    CHECK_SCHEMA_UPGRADE_COMMAND,
     SCHEMA_UPGRADE_COMMAND,
     SCHEMA_VERSION_CHECK,
     SERVER_SNAP_NAME,
 )
 
+# Exit codes of `check-schema-upgrade`.
+_SCHEMA_UP_TO_DATE = 0
+_SCHEMA_UPGRADE_REQUIRED = 2
+
 
 class SchemaToolError(RuntimeError):
     """Raised when a schema-tool command fails unexpectedly."""
+
+
+def upgrade_required(db_uri: str) -> bool:
+    """Check whether the database schema needs upgrading.
+
+    Args:
+        db_uri: the database connection string to check.
+
+    Returns:
+        True if a schema upgrade is required.
+
+    Raises:
+        SchemaToolError: if the command could not be run or exited with an
+            unexpected (non 0/2) code.
+    """
+    _cmd = [f"{SERVER_SNAP_NAME}.{CHECK_SCHEMA_UPGRADE_COMMAND}", db_uri]
+    try:
+        result = subprocess.run(_cmd, text=True, capture_output=True)  # nosec
+    except OSError as e:
+        raise SchemaToolError("check-schema-upgrade command failed to run") from e
+
+    if result.returncode == _SCHEMA_UP_TO_DATE:
+        return False
+    if result.returncode == _SCHEMA_UPGRADE_REQUIRED:
+        return True
+    raise SchemaToolError(
+        f"check-schema-upgrade exited with unexpected code {result.returncode}: {result.stdout}{result.stderr}"
+    )
 
 
 def run_schema_version_check(master_uri: str) -> str:

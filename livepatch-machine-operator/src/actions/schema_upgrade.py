@@ -5,82 +5,52 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING
 
 from ops.charm import ActionEvent
 from ops.model import MaintenanceStatus
 
-from util.schema_tool import SchemaToolError, check_schema_version, run_schema_upgrade
+from util.schema_tool import SchemaToolError, check_schema_version, run_schema_upgrade, upgrade_required
 
 if TYPE_CHECKING:
     from charm import OperatorMachineCharm
 
 
-def _check_schema_upgrade_ran(self: OperatorMachineCharm) -> Tuple[bool, str]:
-    """Check if a schema upgrade has run.
-
-    Args:
-        self: the charm the action is running on.
-
-    Returns:
-        A tuple of whether an upgrade is required, and the reported version.
-    """
-    db_uri = self.database_uri
-    if not self.unit.is_leader() or not db_uri:
-        # The unit is not a leader, so it shouldn't worry about performing a schema upgrade.
-        return False, ""
-    return check_schema_version(db_uri)
-
-
 def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> None:
-    """Run schema upgrade action."""
+    """Manually trigger a schema upgrade.
+
+    The reconciler already does this automatically, on every unit, on every
+    reconcile; this action exists for manual/diagnostic use, and restarts the
+    daemon immediately rather than waiting for the next hook.
+    """
     event.log("Running schema upgrade action...")
-    if self.unit.is_leader():
-        db_uri = self.database_uri
-        if not db_uri:
-            failure_reason = "Database is not ready, cannot run schema upgrade."
-            event.log(failure_reason)
-            event.fail(failure_reason)
-            return
+    db_uri = self.database_uri
+    if not db_uri:
+        failure_reason = "Database is not ready, cannot run schema upgrade."
+        event.log(failure_reason)
+        event.fail(failure_reason)
+        return
 
-        # TODO: the livepatch server snap does not yet expose a command that only
-        # *checks* whether a schema upgrade is required without also running it.
-        # Once such a command is available, use it here to skip invoking
-        # `run_schema_upgrade` altogether when no upgrade is actually needed,
-        # rather than running it unconditionally and comparing versions
-        # before/after as we do below.
-        try:
-            _, version_before = _check_schema_upgrade_ran(self)
+    try:
+        if upgrade_required(db_uri):
             run_schema_upgrade(db_uri)
-            upgrade_required, version_after = _check_schema_upgrade_ran(self)
-        except (OSError, SchemaToolError) as e:
-            failure_reason = f"Failed to run the schema upgrade command: {e}"
-            self.unit.status = MaintenanceStatus(failure_reason)
-            event.log(failure_reason)
-            event.fail(failure_reason)
-            return
+        schema_upgrade_required = upgrade_required(db_uri)
+        _, version = check_schema_version(db_uri)
+    except (OSError, SchemaToolError) as e:
+        failure_reason = f"Failed to run the schema upgrade command: {e}"
+        self.unit.status = MaintenanceStatus(failure_reason)
+        event.log(failure_reason)
+        event.fail(failure_reason)
+        return
 
-        if upgrade_required:
-            failure_reason = "Schema upgrade failed."
-            self.unit.status = MaintenanceStatus(failure_reason)
-            event.log(failure_reason)
-            event.set_results(
-                {
-                    "schema-upgrade-required": upgrade_required,
-                    "schema-version": version_after,
-                }
-            )
-            event.fail(failure_reason)
-        else:
-            event.log("Schema upgrade was successful.")
-            event.set_results(
-                {
-                    "schema-upgrade-required": upgrade_required,
-                    "schema-version": version_after,
-                }
-            )
+    event.set_results(
+        {
+            "schema-upgrade-required": schema_upgrade_required,
+            "schema-version": version,
+        }
+    )
+    event.log("Schema upgrade was successful.")
 
-            if version_after != version_before:
-                self._restart_all_units()
-            else:
-                event.log("Schema was already up to date, skipping restart.")
+    # Converges CA/config drift and restarts the daemon if anything changed.
+    self._reconcile(None)
+
