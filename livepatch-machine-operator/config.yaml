@@ -9,7 +9,6 @@ options:
     description: The servers log level.
     type: string
   server.url-template:
-    default: ""
     description: |
       Template string to use when making URLs for giving back to the client.
 
@@ -77,8 +76,8 @@ options:
       it when both are set. Must be set to the URI of a Juju secret containing a `value`
       key with the comma separated "user:password-hash" pairs, e.g.:
         juju add-secret livepatch-basic-users value="user:hash"
-        juju grant-secret livepatch-basic-users canonical-livepatch-server
-        juju config canonical-livepatch-server auth.basic.users-secret=<secret-uri>
+        juju grant-secret livepatch-basic-users <app-name>
+        juju config <app-name> auth.basic.users-secret=<secret-uri>
     type: secret
   auth.oauth.enabled:
     default: false
@@ -93,8 +92,9 @@ options:
     type: string
   auth.oauth.sig-algs:
     default: RS256
-    description: 'Comma separated list of accepted JWT signature algorithms. Supported
-      values: RS256, RS384, RS512, ES256, ES384, ES512.'
+    description: |
+      Comma separated list of accepted JWT signature algorithms.
+      Supported values: RS256, RS384, RS512, ES256, ES384, ES512.
     type: string
   auth.oauth.allowed-cidp-groups:
     description: 'Comma separated list of CIdP group names allowed to access the admin
@@ -126,11 +126,11 @@ options:
     type: boolean
   auth.oauth.proxy.http:
     default: ''
-    description: A comma separated list HTTP proxies to query the OAuth provider.
+    description: A comma separated list of HTTP proxies to query the OAuth provider.
     type: string
   auth.oauth.proxy.https:
     default: ''
-    description: A comma separated list HTTPS proxies to query the OAuth provider.
+    description: A comma separated list of HTTPS proxies to query the OAuth provider.
     type: string
   auth.oauth.proxy.no-proxy:
     default: ''
@@ -163,7 +163,8 @@ options:
     description: |
       A certificate of the CA that issued the certificate of the contracts service.
       Use 'include-base64://' in a bundle to include a certificate. Otherwise,
-      pass a base64-encoded certificate (base64 of "-----BEGIN" to "-----END").
+      pass a base64-encoded certificate (base64 of "-----BEGIN" to "-----END")
+      as a config option in a Juju CLI invocation.
 
       Deprecated: this option is stored in plain text in Juju's config; prefer setting
       the `ca` key of contracts.credentials-secret to a Juju secret instead.
@@ -173,11 +174,12 @@ options:
     description: |
       Preferred, Juju-secret-backed alternative to contracts.user/contracts.password/
       contracts.ca: any key set here takes priority over its plain-text counterpart above.
+
       Must be set to the URI of a Juju secret with (as applicable) `user`, `password`
       and `ca` keys, e.g.:
         juju add-secret livepatch-contracts-credentials user=<user> password=<password>
-        juju grant-secret livepatch-contracts-credentials canonical-livepatch-server
-        juju config canonical-livepatch-server contracts.credentials-secret=<secret-uri>
+        juju grant-secret livepatch-contracts-credentials <app-name>
+        juju config <app-name> contracts.credentials-secret=<secret-uri>
 
       `ca` is a base64-encoded certificate of the CA that issued the certificate of the
       contracts service (base64 of "-----BEGIN" to "-----END").
@@ -236,7 +238,7 @@ options:
         - ibm
         - oracle
 
-      When using "postgres" for storage, the server uses the database relation
+      When using "postgres" for storage, the charm uses the database relation
       automatically with the default database name "livepatch". A custom
       database may be specified via patch-storage.postgres-connection-string
       but must be created manually.
@@ -287,7 +289,6 @@ options:
     description: The region assigned to this domain and tenant.
     type: string
   patch-storage.postgres-connection-string:
-    default: ""
     description: |
       A connection string URI to a PostgreSQL database for patch storage.
 
@@ -535,7 +536,7 @@ options:
     type: boolean
   patch-sync.minimum-kernel-version:
     description: >-
-      A minimum kernel version of format "0.0.0" denoting the lowest 
+      A minimum kernel version of format "0.0.0" denoting the lowest
       kernel version to download patches for. When no value is present,
       all are synced. For example, "5.4.0" will sync "5.4.0" and up.
     type: string
@@ -568,7 +569,7 @@ options:
   patch-sync.token:
     default: ""
     description: |
-      Patch snapshot synchronisation token.
+      Token generated from the admin-tool to authenticate machine to machine.
 
       Deprecated: this option is stored in plain text in Juju's config; prefer setting
       patch-sync.token-secret to a Juju secret URI instead.
@@ -670,8 +671,9 @@ options:
     type: string
   cve-sync.timeout:
     default: 5m
-    description: 'Timeout for the CVE sync client. The CVE sync will timeout if the
-      CVE service takes longer than the timeout defined, to send the CVE data.'
+    description: |
+      Timeout for the CVE sync client. The CVE sync will timeout if the CVE service
+      takes longer than the timeout defined, to send the CVE data.
     type: string
   cve-sync.proxy.enabled:
     default: false
@@ -705,8 +707,9 @@ options:
     type: string
   lsn-sync.timeout:
     default: 5m
-    description: 'Timeout for the LSN sync client. The LSN sync will timeout if the
-      CVE service takes longer than the timeout defined, to send the LSN data.'
+    description: |
+      Timeout for the LSN sync client. The LSN sync will timeout if the CVE service
+      takes longer than the timeout defined, to send the LSN data.
     type: string
   lsn-sync.proxy.enabled:
     default: false
@@ -815,7 +818,7 @@ options:
     description: >
       this is the sampling average of one blocking event per `BlockProfileRate` nanoseconds spent blocked.
       For example, set rate to 1000000000 (aka int(time.Second.Nanoseconds())) to record one sample per second a goroutine is blocked.
-      It is recommended to set this to values greater than 10,000. 
+      It is recommended to set this to values greater than 10,000.
       For more info, visit this: https://github.com/DataDog/go-profiler-notes/blob/main/block.md#benchmarks
     type: int
     default: 50000

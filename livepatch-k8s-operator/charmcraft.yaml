@@ -149,7 +149,7 @@ config:
         The maximum number of concurrently incoming requests.
 
         After this limit, requests are queued according to the following:
-        concurrency-limit - burst_limit
+        concurrency-limit - burst-limit
 
         For defaults, this is:
         1000 - 500 = 500 (Maximum queue).
@@ -191,8 +191,8 @@ config:
         it when both are set. Must be set to the URI of a Juju secret containing a `value`
         key with the comma separated "user:password-hash" pairs, e.g.:
           juju add-secret livepatch-basic-users value="user:hash"
-          juju grant-secret livepatch-basic-users canonical-livepatch-server-k8s
-          juju config canonical-livepatch-server-k8s auth.basic.users-secret=<secret-uri>
+          juju grant-secret livepatch-basic-users <app-name>
+          juju config <app-name> auth.basic.users-secret=<secret-uri>
       type: secret
     auth.oauth.enabled:
       default: false
@@ -259,6 +259,7 @@ config:
       type: string
 
     contracts.enabled:
+      default: false
       description: Whether use of the contracts service is enabled.
       type: boolean
     contracts.url:
@@ -298,8 +299,8 @@ config:
         Must be set to the URI of a Juju secret with (as applicable) `user`, `password`
         and `ca` keys, e.g.:
           juju add-secret livepatch-contracts-credentials user=<user> password=<password>
-          juju grant-secret livepatch-contracts-credentials canonical-livepatch-server-k8s
-          juju config canonical-livepatch-server-k8s contracts.credentials-secret=<secret-uri>
+          juju grant-secret livepatch-contracts-credentials <app-name>
+          juju config <app-name> contracts.credentials-secret=<secret-uri>
 
         `ca` is a base64-encoded certificate of the CA that issued the certificate of the
         contracts service (base64 of "-----BEGIN" to "-----END").
@@ -341,7 +342,7 @@ config:
       type: string
     timescale_db.work_mem:
       description: |
-        The PostgreSQL work_mem parameter for connections with TimescaleDB.
+        The PostgreSQL work_mem parameter (in MB) for connections with TimescaleDB.
       default: 16
       type: int
     timescale_db.flush_timeout:
