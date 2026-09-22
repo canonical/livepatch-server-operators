@@ -36,17 +36,16 @@ from constants.statuses import (
     AWAIT_POSTGRES_PRIMARY,
     AWAIT_POSTGRES_RELATION,
     AWAIT_POSTGRES_URI,
-    LIVEPATCH_FAILED_TO_CHECK_SCHEMA,
     LIVEPATCH_FAILED_TO_CONFIGURE,
     LIVEPATCH_FAILED_TO_INSTALL,
     LIVEPATCH_FAILED_TO_RESTART,
     LIVEPATCH_FAILED_TO_UPDATE_CA,
     LIVEPATCH_NOT_RUNNING,
     LIVEPATCH_RUNNING,
-    SCHEMA_UPGRADE_REQUIRED,
+    SCHEMA_UPGRADE_FAILED,
 )
 from relations import BothDatabaseRelationsError
-from util.schema_tool import SchemaToolError, check_schema_version
+from util.schema_tool import SchemaToolError, run_schema_upgrade, upgrade_required
 from workload import SnapWorkload
 
 logger = logging.getLogger(__name__)
@@ -57,19 +56,15 @@ TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt
 class MachineReconciler:
     """Drives the machine towards the charm's goal state."""
 
-    def __init__(self, charm: Any, workload: SnapWorkload, app_state: Any, unit_state: Any) -> None:
+    def __init__(self, charm: Any, workload: SnapWorkload) -> None:
         """Construct.
 
         Args:
             charm: the charm being reconciled.
             workload: the Livepatch snap workload.
-            app_state: application-scoped peer relation state.
-            unit_state: unit-scoped peer relation state.
         """
         self._charm = charm
         self._workload = workload
-        self._state = app_state
-        self._unit_state = unit_state
         self.status: Optional[StatusBase] = None
 
     def reconcile(self, _: Any = None) -> None:
@@ -124,13 +119,10 @@ class MachineReconciler:
             return
 
         try:
-            schema_migrated = self._schema_migrated(db_uri)
+            schema_upgraded = self._converge_schema(db_uri)
         except (OSError, SchemaToolError) as e:
-            logger.error("failed to check the database schema version: %s", e)
-            self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_CHECK_SCHEMA)
-            return
-        if not schema_migrated:
-            self.status = BlockedStatus(SCHEMA_UPGRADE_REQUIRED)
+            logger.error("failed to upgrade the database schema: %s", e)
+            self.status = BlockedStatus(SCHEMA_UPGRADE_FAILED)
             return
 
         # -- Converge trusted certificates and snap configuration.
@@ -152,7 +144,6 @@ class MachineReconciler:
             logger.error("failed to apply snap configuration: %s", e)
             self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_CONFIGURE)
             return
-        restart_cue = self._pending_restart_cue()
 
         # -- Converge the daemon.
         running = self._workload.running
@@ -160,7 +151,7 @@ class MachineReconciler:
             "snap installed or refreshed": snap_changed,
             "trusted CA certificate updated": ca_changed,
             "snap configuration changed": config_changed,
-            "restart cue pending": restart_cue is not None,
+            "database schema upgraded": schema_upgraded,
             "daemon not running": not running,
         }
         if any(restart_reasons.values()):
@@ -173,10 +164,6 @@ class MachineReconciler:
                 self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_RESTART)
                 return
             running = self._workload.running
-            if restart_cue is not None:
-                # Only recorded once the restart succeeded, so a failure is
-                # retried on the next hook.
-                self._unit_state.applied_restart_cue = restart_cue
 
         self.status = ActiveStatus(LIVEPATCH_RUNNING) if running else MaintenanceStatus(LIVEPATCH_NOT_RUNNING)
 
@@ -205,41 +192,27 @@ class MachineReconciler:
             return WaitingStatus(AWAIT_POSTGRES_URI)
         return WaitingStatus(AWAIT_POSTGRES_PRIMARY)
 
-    def _pending_restart_cue(self) -> Optional[int]:
-        """Report an outstanding restart request from the leader.
-
-        Actions that change the workload without changing its configuration
-        bump a counter in application data. Each unit records the value it has
-        acted on in its own unit data, so the request is applied exactly once
-        per unit.
-
-        Returns:
-            The cue value to act on, or None if there is nothing outstanding.
-        """
-        if not self._state.is_ready() or not self._unit_state.is_ready():
-            return None
-        cue = self._state.restart_cue or 0
-        if cue == (self._unit_state.applied_restart_cue or 0):
-            return None
-        return cue
-
     # -- Schema helpers.
 
-    def _schema_migrated(self, db_uri: str) -> bool:
-        """Check that the database schema has been migrated.
+    def _converge_schema(self, db_uri: str) -> bool:
+        """Migrate the database schema, if it is not already up to date.
+
+        Every unit runs this on every reconcile; the snap serializes concurrent
+        upgrade attempts internally, so no peer coordination is needed here.
 
         Args:
-            db_uri: the database connection string to check.
+            db_uri: the database connection string to check and migrate.
 
         Returns:
-            True if the schema is up to date.
-        """
-        upgrade_required, version = check_schema_version(db_uri)
-        if upgrade_required:
-            logger.warning("database schema requires a migration")
-            return False
+            True if a migration was performed this reconcile.
 
-        logger.info("database has been migrated; current version: %s", version)
+        Raises:
+            SchemaToolError: if the check or upgrade command failed.
+        """
+        if not upgrade_required(db_uri):
+            return False
+        logger.info("database schema requires a migration; running the upgrade")
+        run_schema_upgrade(db_uri)
         return True
 
     # -- Certificate helpers.
