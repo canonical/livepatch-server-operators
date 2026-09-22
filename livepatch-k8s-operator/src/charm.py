@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import ops
 import ops.pebble
 import paas_charm.app
+import paas_charm.charm
 import paas_charm.databases
 import paas_charm.go
 import pgsql

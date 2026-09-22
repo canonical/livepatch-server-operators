@@ -68,8 +68,8 @@ _SENSITIVE_SNAP_CONFIG_PATTERN = re.compile(
     r"|patch-storage\.postgres-connection-string"
     r"|patch-sync\.token"
     r"|influx\.token"
-     r"|patch-storage.swift-api-key"
-     r"|patch-storage.swift-username"
+    r"|patch-storage.swift-api-key"
+    r"|patch-storage.swift-username"
     r"|patch-storage\.s3-access-key"
     r"|patch-storage\.s3-secret-key"
     r"|patch-storage\.gcs-credentials-json(?:-file)?"
@@ -177,18 +177,23 @@ class RedactingFormatter(logging.Formatter):
 
 
 def setup_log_redaction() -> None:
-    """Attach redaction formatter to the root logger.
+    """Attach redaction to the root logger.
 
     Must be called after ops has initialised the root logger — i.e. after
     ``super().__init__()`` inside the charm's ``__init__`` method.
 
     Effects:
+    - A ``RedactingFilter`` is registered on the root logger, redacting every
+      record in-place before any handler renders it — including handlers that
+      were added after this call or attached to a non-root logger.
     - Each existing handler on the root logger has its formatter wrapped with
       ``RedactingFormatter`` as a safety net.
     """
     root = logging.getLogger()
 
-    # Wrap existing handlers with RedactingFormatter if not already wrapped.
+    if not any(isinstance(f, RedactingFilter) for f in root.filters):
+        root.addFilter(RedactingFilter())
+
     for handler in root.handlers:
         if not isinstance(handler.formatter, RedactingFormatter):
             handler.setFormatter(RedactingFormatter(handler.formatter))
