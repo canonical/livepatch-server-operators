@@ -15,7 +15,7 @@ from ops import testing
 
 from charm import OperatorMachineCharm
 from constants.snap import SERVER_SNAP_REVISION
-from constants.statuses import LIVEPATCH_RUNNING, LIVEPATCH_NOT_RUNNING
+from constants.statuses import LIVEPATCH_NOT_RUNNING, LIVEPATCH_RUNNING
 
 CHARM_ROOT = Path(__file__).resolve().parent.parent.parent
 APP_NAME = "canonical-livepatch-server"
@@ -56,7 +56,18 @@ def snap_set():
             merged = {}
             for d in recorded:
                 merged.update(d)
-            return merged.get(key, {}) if typed else merged.get(key, "")
+            if not typed:
+                return merged.get(key, "")
+            # snapd returns `snap get lp -d` as a nested tree; rebuild it so
+            # current_config() reflects values already written by the charm.
+            nested: Dict[str, Any] = {}
+            for dotted, value in merged.items():
+                node = nested
+                parts = dotted.split(".")
+                for part in parts[:-1]:
+                    node = node.setdefault(part, {})
+                node[parts[-1]] = value
+            return nested.get(key, {})
 
         snap.set.side_effect = _set
         snap.get.side_effect = _get
@@ -173,8 +184,7 @@ class TestDatabaseRelations:
         state_in = _leader_state(relations=[legacy, standard])
         state_out = ctx.run(ctx.on.relation_changed(standard), state_in)
         assert state_out.unit_status == testing.BlockedStatus(
-            "Integration with both database relations is not allowed; "
-            "use either `database` or `database-legacy`."
+            "Integration with both database relations is not allowed; " "use either `database` or `database-legacy`."
         )
 
     def test_database_relations_are_mutually_exclusive__standard_first(self, ctx, snap_set):
@@ -184,8 +194,7 @@ class TestDatabaseRelations:
         state_in = _leader_state(relations=[standard, legacy])
         state_out = ctx.run(ctx.on.relation_changed(standard), state_in)
         assert state_out.unit_status == testing.BlockedStatus(
-            "Integration with both database relations is not allowed; "
-            "use either `database` or `database-legacy`."
+            "Integration with both database relations is not allowed; " "use either `database` or `database-legacy`."
         )
 
     def test_standard_database_relation__success(self, ctx, snap_set, schema_check):
@@ -286,6 +295,155 @@ class TestProAirgappedServer:
         ctx.run(ctx.on.relation_changed(pro, remote_unit=0), state_in)
         ctx.run(ctx.on.relation_broken(pro), state_in)
         assert any(delta.get("lp.contracts.enabled") == "False" for delta in snap_set)
+
+
+class TestMetricsDBRelation:
+    """Tests for the metrics-db (TimescaleDB) relation."""
+
+    def test_metrics_db_relation__success(self, ctx, snap_set, schema_check):
+        """Test metrics-db data configures the timescale connection string."""
+        standard = _standard_db_relation()
+        metrics_db = testing.Relation(
+            "metrics-db",
+            remote_app_name="postgresql",
+            remote_app_data={"username": "tsuser", "password": "tspass", "endpoints": "postgres.local:5432"},
+        )
+        state_in = _leader_state(relations=[standard, metrics_db])
+        ctx.run(ctx.on.relation_changed(metrics_db), state_in)
+        assert any(
+            delta.get("lp.timescale_db.connection-string")
+            == "postgresql://tsuser:tspass@postgres.local:5432/livepatch-metrics-db"
+            for delta in snap_set
+        )
+
+    def test_metrics_db_relation__missing_credentials(self, ctx, snap_set, schema_check):
+        """Test metrics-db relation without data does not set the connection string."""
+        standard = _standard_db_relation()
+        metrics_db = testing.Relation("metrics-db", remote_app_name="postgresql")
+        state_in = _leader_state(relations=[standard, metrics_db])
+        ctx.run(ctx.on.relation_changed(metrics_db), state_in)
+        assert not any(delta.get("lp.timescale_db.connection-string") for delta in snap_set)
+
+    def test_metrics_db_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test removing the metrics-db relation clears the connection string."""
+        standard = _standard_db_relation()
+        metrics_db = testing.Relation(
+            "metrics-db",
+            remote_app_name="postgresql",
+            remote_app_data={"username": "tsuser", "password": "tspass", "endpoints": "postgres.local:5432"},
+        )
+        state_in = _leader_state(relations=[standard, metrics_db])
+        ctx.run(ctx.on.relation_changed(metrics_db), state_in)
+
+        metrics_db_removed = testing.Relation("metrics-db", remote_app_name="postgresql")
+        state_removed = _leader_state(relations=[standard, metrics_db_removed])
+        ctx.run(ctx.on.relation_broken(metrics_db_removed), state_removed)
+        assert any(delta.get("lp.timescale_db.connection-string") == "" for delta in snap_set)
+
+
+class TestCVECatalogRelation:
+    """Tests for the cve-catalog relation."""
+
+    def test_cve_catalog_relation__success(self, ctx, snap_set, schema_check):
+        """Test cve-catalog data configures the CVE and LSN source URLs."""
+        standard = _standard_db_relation()
+        cve = testing.Relation(
+            "cve-catalog",
+            remote_app_name="livepatch-cve-service",
+            remote_app_data={"url": "scheme://some.host.name:9999"},
+        )
+        state_in = _leader_state(relations=[standard, cve])
+        ctx.run(ctx.on.relation_changed(cve), state_in)
+        assert any(delta.get("lp.cve-sync.source-url") == "scheme://some.host.name:9999" for delta in snap_set)
+        assert any(delta.get("lp.lsn-sync.source-url") == "scheme://some.host.name:9999" for delta in snap_set)
+
+    def test_cve_catalog_relation__applies_to_every_unit(self, ctx, snap_set, schema_check):
+        """Test cve-catalog data is applied on non-leader units too."""
+        standard = _standard_db_relation()
+        cve = testing.Relation(
+            "cve-catalog",
+            remote_app_name="livepatch-cve-service",
+            remote_app_data={"url": "scheme://some.host.name:9999"},
+        )
+        state_in = testing.State(
+            leader=False,
+            relations=[standard, cve, testing.PeerRelation("livepatch")],
+            config=DEFAULT_CONFIG,
+        )
+        ctx.run(ctx.on.relation_changed(cve), state_in)
+        assert any(delta.get("lp.cve-sync.source-url") == "scheme://some.host.name:9999" for delta in snap_set)
+
+    def test_cve_catalog_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test removing the cve-catalog relation clears the source URLs."""
+        standard = _standard_db_relation()
+        cve = testing.Relation(
+            "cve-catalog",
+            remote_app_name="livepatch-cve-service",
+            remote_app_data={"url": "scheme://some.host.name:9999"},
+        )
+        state_in = _leader_state(relations=[standard, cve])
+        ctx.run(ctx.on.relation_changed(cve), state_in)
+
+        cve_removed = testing.Relation("cve-catalog", remote_app_name="livepatch-cve-service")
+        state_removed = _leader_state(relations=[standard, cve_removed])
+        ctx.run(ctx.on.relation_broken(cve_removed), state_removed)
+        assert not any(delta.get("lp.cve-sync.source-url") for delta in snap_set[1:])
+        assert not any(delta.get("lp.lsn-sync.source-url") for delta in snap_set[1:])
+
+
+class TestSendOTLPRelation:
+    """Tests for the send-otlp relation."""
+
+    def test_send_otlp_relation__success(self, ctx, snap_set, schema_check):
+        """Test send-otlp data configures the OTLP metrics endpoint."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp",
+            remote_app_name="opentelemetry-collector",
+            remote_app_data={"endpoint": "otel-collector:4318", "protocol": "http", "insecure": "true"},
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert any(delta.get("lp.otel-metrics.otlp-endpoint") == "otel-collector:4318" for delta in snap_set)
+        assert any(delta.get("lp.otel-metrics.protocol") == "http" for delta in snap_set)
+        assert any(delta.get("lp.otel-metrics.insecure") == "True" for delta in snap_set)
+
+    def test_send_otlp_relation__defaults(self, ctx, snap_set, schema_check):
+        """Test send-otlp relation defaults protocol and secure mode."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp", remote_app_name="opentelemetry-collector", remote_app_data={"endpoint": "otel-collector:4318"}
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert any(delta.get("lp.otel-metrics.protocol") == "http" for delta in snap_set)
+        assert any(delta.get("lp.otel-metrics.insecure") == "True" for delta in snap_set)
+
+    def test_send_otlp_relation__insecure_false(self, ctx, snap_set, schema_check):
+        """Test send-otlp relation with insecure disabled."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp",
+            remote_app_name="opentelemetry-collector",
+            remote_app_data={"endpoint": "otel-collector:4318", "insecure": "false"},
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert any(delta.get("lp.otel-metrics.insecure") == "False" for delta in snap_set)
+
+    def test_send_otlp_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test removing the send-otlp relation clears the OTLP metrics config."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp", remote_app_name="opentelemetry-collector", remote_app_data={"endpoint": "otel-collector:4318"}
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+
+        send_otlp_removed = testing.Relation("send-otlp", remote_app_name="opentelemetry-collector")
+        state_removed = _leader_state(relations=[standard, send_otlp_removed])
+        ctx.run(ctx.on.relation_broken(send_otlp_removed), state_removed)
+        assert any(delta.get("lp.otel-metrics.otlp-endpoint") == "" for delta in snap_set)
 
 
 class TestLifecycle:
