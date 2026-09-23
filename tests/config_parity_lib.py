@@ -10,6 +10,14 @@ CONFIG_SOURCES = {
 }
 
 INTENTIONAL_DIFFERENCES: dict[str, set[str]] = {
+    # go-framework (paas-charm) plumbing options, k8s-only since the ejection of
+    # the go-framework extension. The machine charm manages the snap directly and
+    # has no framework app server.
+    "app-port": {"presence"},
+    "app-secret-key": {"presence"},
+    "app-secret-key-id": {"presence"},
+    "metrics-path": {"presence"},
+    "metrics-port": {"presence"},
     "ingress-interface": {"presence"},
     "server.server-address": {"presence"},
     "patch-storage.filesystem-path": {"default"},
