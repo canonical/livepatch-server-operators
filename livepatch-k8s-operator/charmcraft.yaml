@@ -305,6 +305,11 @@ config:
         contracts service (base64 of "-----BEGIN" to "-----END").
       type: secret
 
+    contracts.timeout:
+      default: "5s"
+      description: Timeout for requests to the contracts service.
+      type: string
+
     database.connection-pool-max:
       default: 10
       description: The maximum pool of connections to PostgreSQL.

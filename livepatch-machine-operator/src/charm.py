@@ -33,6 +33,8 @@ from relations import (
     DATABASE_NAME,
     DATABASE_RELATION,
     DATABASE_RELATION_LEGACY,
+    METRICS_DB_NAME,
+    METRICS_DB_RELATION,
     PEER_RELATION,
 )
 from state import State
@@ -81,6 +83,15 @@ class OperatorMachineCharm(CharmBase):
         return relations.database_uri(self.database) or self._legacy_database_uri
 
     @property
+    def metrics_db_uri(self) -> Optional[str]:
+        """The timescale/metrics database connection string, if related.
+
+        Returns:
+            The connection string from the metrics-db relation, or None.
+        """
+        return relations.metrics_db_uri(self.metrics_db)
+
+    @property
     def _legacy_database_uri(self) -> Optional[str]:
         """The connection string captured from the legacy database relation.
 
@@ -124,6 +135,14 @@ class OperatorMachineCharm(CharmBase):
             database_name=DATABASE_NAME,
         )
 
+        # Second, optional PostgreSQL/TimescaleDB database for time-series
+        # metrics.
+        self.metrics_db = DatabaseRequires(
+            self,
+            relation_name=METRICS_DB_RELATION,
+            database_name=METRICS_DB_NAME,
+        )
+
         # Observability.
         server_port = parse_server_port(self.config.get(OPT_SERVER_ADDRESS))
         if server_port is None:
@@ -159,11 +178,18 @@ class OperatorMachineCharm(CharmBase):
             self.on.website_relation_joined,
             self.on.website_relation_changed,
             self.on.database_relation_broken,
+            self.database.on.database_created,
+            self.database.on.endpoints_changed,
+            self.metrics_db.on.database_created,
+            self.metrics_db.on.endpoints_changed,
+            self.on.metrics_db_relation_broken,
+            self.on.cve_catalog_relation_changed,
+            self.on.cve_catalog_relation_broken,
+            self.on.send_otlp_relation_changed,
+            self.on.send_otlp_relation_broken,
             self.on.pro_airgapped_server_relation_changed,
             self.on.pro_airgapped_server_relation_departed,
             self.on.pro_airgapped_server_relation_broken,
-            self.database.on.database_created,
-            self.database.on.endpoints_changed,
             self.db.on.standby_changed,
         ):
             self.framework.observe(event, self._reconcile)

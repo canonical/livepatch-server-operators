@@ -137,6 +137,9 @@ class MachineReconciler:
             is_leader=charm.unit.is_leader(),
             model_uuid=charm.model.uuid,
             pro_airgapped_url=relations.pro_airgapped_url(charm),
+            timescale_db_uri=charm.metrics_db_uri,
+            cve_catalog_url=relations.cve_catalog_url(charm),
+            otel_metrics_endpoint=relations.otel_metrics_endpoint(charm),
         )
         try:
             config_changed = self._workload.apply_config(desired)
