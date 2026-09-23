@@ -19,7 +19,6 @@ here directly.
 
 import logging
 import typing
-from base64 import b64decode
 from urllib.parse import urlparse
 
 import ops
@@ -64,8 +63,14 @@ def _patched_make_database_requirers(
 paas_charm.databases.make_database_requirers = _patched_make_database_requirers
 paas_charm.charm.make_database_requirers = _patched_make_database_requirers
 
-import utils
 from legacy_constants import map_old_config_to_new_config
+from livepatch_common.contracts import get_machine_token, get_proxy_dict, get_resource_token
+from livepatch_common.relations import (
+    cve_source_url,
+    otlp_metrics_endpoint,
+    pro_airgapped_server_address,
+)
+from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME, decode_contracts_ca
 from log_redactor import setup_log_redaction
 
 logger = logging.getLogger(__name__)
@@ -78,8 +83,6 @@ SEND_OTLP_RELATION = "send-otlp"
 DATABASE_LEGACY_RELATION = "database-legacy"
 DATABASE_LEGACY_NAME = "livepatch-server"
 SCHEMA_TOOL_PATH = "/usr/local/bin/livepatch-schema-tool"
-# Template for storing the trusted CA certificate for the contracts service.
-TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt"
 
 # Juju secret label used to persist the ua-contracts resource token exchanged
 # via the get-resource-token action. A Juju app-owned secret is used instead
@@ -531,10 +534,11 @@ class LivepatchCharm(paas_charm.go.Charm):
             logger.debug("ca config not set")
             return
 
-        try:
-            cert = b64decode(contracts_ca).decode("utf8")
-        except Exception:  # noqa: BLE001 - malformed config shouldn't crash the charm
-            logger.error("failed to parse base64 value of the `ca` key in `contracts.credentials-secret`/`contracts.ca`")
+        cert, _ = decode_contracts_ca(contracts_ca)
+        if cert is None:
+            logger.error(
+                "failed to parse base64 value of the `ca` key in `contracts.credentials-secret`/`contracts.ca`"
+            )
             return
 
         container.push(TRUSTED_CA_FILENAME, cert, make_dirs=True)
@@ -572,10 +576,7 @@ class LivepatchCharm(paas_charm.go.Charm):
             data = relation.data.get(unit)
             if not data or not data.get("hostname"):
                 continue
-            scheme = data.get("scheme") or "http"
-            port = data.get("port")
-            netloc = data["hostname"] + (f":{port}" if port else "")
-            return f"{scheme}://{netloc}"
+            return pro_airgapped_server_address(data)
         return None
 
     def cve_catalog_address(self) -> typing.Optional[str]:
@@ -587,8 +588,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         relation = self.model.get_relation(CVE_CATALOG_RELATION)
         if not relation:
             return None
-        address = relation.data.get(relation.app, {}).get("url", "")
-        return address or None
+        return cve_source_url(relation.data.get(relation.app, {}))
 
     def otel_metrics_endpoint(self) -> typing.Optional[typing.Tuple[str, str, bool]]:
         """Return (endpoint, protocol, insecure) for the send-otlp relation, if related.
@@ -599,13 +599,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         relation = self.model.get_relation(SEND_OTLP_RELATION)
         if not relation:
             return None
-        data = relation.data.get(relation.app, {})
-        endpoint = data.get("endpoint")
-        if not endpoint:
-            return None
-        protocol = data.get("protocol", "http")
-        insecure = data.get("insecure", "true") == "true"
-        return endpoint, protocol, insecure
+        return otlp_metrics_endpoint(relation.data.get(relation.app, {}))
 
     def resource_token(self) -> typing.Optional[str]:
         """Return the stored patch-sync resource token, if any.
@@ -669,16 +663,16 @@ class LivepatchCharm(paas_charm.go.Charm):
             )
             return
 
-        proxies = utils.get_proxy_dict(self.config)
+        proxies = get_proxy_dict(self.config)
         contracts_url = self.config.get("contracts.url", "")
-        machine_token = utils.get_machine_token(
+        machine_token = get_machine_token(
             contract_token, contracts_url=contracts_url, proxies=proxies
         )
         if not machine_token:
             event.fail("cannot fetch the resource token: failed to fetch the machine token")
             return
 
-        resource_token = utils.get_resource_token(
+        resource_token = get_resource_token(
             machine_token, contracts_url=contracts_url, proxies=proxies
         )
         if not resource_token:

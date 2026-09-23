@@ -16,11 +16,11 @@ retained as-is.
 from __future__ import annotations
 
 import logging
-from base64 import b64decode
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import ops
+from livepatch_common.trusted_ca import decode_contracts_ca
 
 logger = logging.getLogger(__name__)
 
@@ -187,27 +187,6 @@ def parse_server_port(server_address: Optional[str]) -> Optional[str]:
     return port or None
 
 
-def _decode_contracts_ca(encoded: Optional[str]) -> Tuple[Optional[str], bool]:
-    """Decode the base64-encoded ``contracts.ca`` configuration option.
-
-    A malformed value is logged and ignored rather than blocking the charm,
-    which preserves the behaviour of earlier charm revisions.
-
-    Args:
-        encoded: the raw base64 configuration value, if set.
-
-    Returns:
-        The decoded PEM text and whether a configured value was undecodable.
-    """
-    if not encoded:
-        return None, False
-    try:
-        return b64decode(encoded).decode("utf8"), False
-    except Exception:  # noqa: B902 - any decoding failure is treated the same
-        logger.error("failed to parse base64 value of `contracts.ca` config option")
-        return None, True
-
-
 @dataclass(frozen=True)
 class CharmConfig:
     """Validated view over the charm's Juju configuration.
@@ -258,7 +237,7 @@ class CharmConfig:
         server_port = parse_server_port(server_address)
         if server_port is None:
             raise InvalidCharmConfigError("✘ server.server-address config must be in `host:port` form")
-        contracts_ca, has_invalid_contracts_ca = _decode_contracts_ca(raw.get(OPT_CONTRACTS_CA))
+        contracts_ca, has_invalid_contracts_ca = decode_contracts_ca(raw.get(OPT_CONTRACTS_CA))
 
         return cls(
             raw=raw,

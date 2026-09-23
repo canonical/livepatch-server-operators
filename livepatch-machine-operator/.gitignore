@@ -1,6 +1,8 @@
 venv/
 build/
 *.charm
+src/grafana_dashboards/
+src/livepatch_common/
 
 .coverage
 __pycache__/

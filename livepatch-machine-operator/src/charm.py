@@ -27,10 +27,10 @@ from ops.charm import CharmBase, CollectStatusEvent
 
 import relations
 from config import OPT_SERVER_ADDRESS, parse_server_port
+from livepatch_common.relations import DATABASE_NAME, strip_query_parameters
 from log_redactor import setup_log_redaction
 from reconciler import MachineReconciler
 from relations import (
-    DATABASE_NAME,
     DATABASE_RELATION,
     DATABASE_RELATION_LEGACY,
     METRICS_DB_NAME,
@@ -304,7 +304,7 @@ class OperatorMachineCharm(CharmBase):
             # which causes the schema upgrade command to return `unrecognized configuration parameter
             # "fallback_application_name" (SQLSTATE 42704)`.
             # wokeignore:rule=master
-            self._unit_state.legacy_db_uri = relations.strip_query_parameters(event.master.uri)
+            self._unit_state.legacy_db_uri = strip_query_parameters(event.master.uri)
         else:
             self._unit_state.legacy_db_uri = None
 

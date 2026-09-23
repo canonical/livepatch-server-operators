@@ -471,7 +471,7 @@ class TestCharm(unittest.TestCase):
                 return {"resourceToken": "some-resource-token"}
             raise AssertionError("unexpected request")
 
-        with patch("utils.make_request", Mock(side_effect=make_request_side_effect)):
+        with patch("livepatch_common.contracts.make_request", Mock(side_effect=make_request_side_effect)):
             output = self.harness.run_action("get-resource-token", {"contract-token": "some-token"})
 
         self.assertEqual(self.harness.charm._state.resource_token, "some-resource-token")
