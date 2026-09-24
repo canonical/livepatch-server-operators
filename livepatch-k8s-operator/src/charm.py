@@ -75,6 +75,19 @@ def _encode(value: object) -> str:
 class LivepatchApp(paas_charm.app.App):
     """Application wrapper that maps charm state to livepatch-server's `LP_*` env vars."""
 
+    def __init__(self, *, charm: "LivepatchCharm", **kwargs: typing.Any) -> None:
+        """Construct, keeping a reference to the owning charm for the custom env var logic.
+
+        `paas_charm.app.App` doesn't keep a reference to the charm itself, but
+        `gen_environment()` below needs one to read custom relation/secret state.
+
+        Args:
+            charm: the charm instance that owns this App.
+            kwargs: passthrough to `paas_charm.app.App.__init__`.
+        """
+        super().__init__(**kwargs)
+        self._charm = charm
+
     def gen_environment(self) -> dict[str, str]:
         """Return the environment for the Livepatch Pebble service.
 
@@ -88,7 +101,7 @@ class LivepatchApp(paas_charm.app.App):
         """
         env = super().gen_environment()
 
-        charm = self._charm  # type: ignore[attr-defined]
+        charm = self._charm
 
         lp_env: dict[str, str] = {
             "LP_" + k.replace("-", "_").replace(".", "_").upper(): _encode(v)
@@ -162,7 +175,21 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             args: passthrough to CharmBase/PaasCharm.
         """
-        super().__init__(*args)
+        # `metrics-db` intentionally shares the `postgresql_client` interface with
+        # `postgresql` (so it can relate to a stock postgresql-k8s deployment), but
+        # paas_charm.databases.make_database_requirers() keys auto-wired requirers by
+        # *interface type*, not relation name, so having both present crashes every
+        # hook with "two objects claiming to be ... PaaSDatabaseRequires[postgresql]
+        # have been created". Hide `metrics-db` from that pass only; it is wired up
+        # manually below via `_metrics_db` instead.
+        framework = args[0]
+        requires = framework.meta.requires
+        hidden_metrics_db_require = requires.pop(METRICS_DB_RELATION, None)
+        try:
+            super().__init__(*args)
+        finally:
+            if hidden_metrics_db_require is not None:
+                requires[METRICS_DB_RELATION] = hidden_metrics_db_require
         setup_log_redaction()
 
         # Cache the configured ingress method so `_update_ingress_method` is
@@ -230,6 +257,7 @@ class LivepatchCharm(paas_charm.go.Charm):
             A new LivepatchApp instance.
         """
         return LivepatchApp(
+            charm=self,
             container=self._container,
             charm_state=self._create_charm_state(),
             workload_config=self._workload_config,
