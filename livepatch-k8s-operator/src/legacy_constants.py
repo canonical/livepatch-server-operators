@@ -11,9 +11,9 @@ import yaml
 CONFIG_MAP = {
     # Authentication
     "auth_basic_users": "auth.basic.users",
-    "auth_lp_teams": "auth.sso.teams",
-    "auth_sso_location": "auth.sso.url",
-    "auth_sso_public_key": "auth.sso.public-key",
+    "auth_lp_teams": None,
+    "auth_sso_location": None,
+    "auth_sso_public_key": None,
     # Server
     "burst_limit": "server.burst-limit",
     "concurrency_limit": "server.concurrency-limit",
@@ -92,8 +92,6 @@ CONFIG_MAP = {
 # Additional config map for enabling certain features based on if a value is set.
 ADDITIONAL_CONFIG_MAP = {
     "auth_basic_users": ("auth.basic.enabled", True),
-    "auth_lp_teams": ("auth.sso.enabled", True),
-    "auth_sso_public_key": ("auth.sso.enabled", True),
     "blocklist_cache_refresh": ("patch-blocklist.enabled", True),
     "contract_server_password": ("contracts.enabled", True),
     "contract_server_user": ("contracts.enabled", True),
