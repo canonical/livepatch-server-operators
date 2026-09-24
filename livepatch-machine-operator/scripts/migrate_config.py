@@ -43,7 +43,7 @@ config_map = {
     "profiler_mutex_profile_fraction": "profiler.mutex_profile_fraction",
     "profiler_profile_allocations": "profiler.profile_allocations",
     "profiler_profile_blocks": "profiler.profile_blocks",
-    "profiler_profile_goroutines": "profiler.profile_goroutine",
+    "profiler_profile_goroutines": "profiler.profile_goroutines",
     "profiler_profile_inuse": "profiler.profile_inuse",
     "profiler_profile_mutexes": "profiler.profile_mutexes",
     "profiler_sample_rate": "profiler.sample_rate",

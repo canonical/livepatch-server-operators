@@ -31,10 +31,15 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
         event.fail(failure_reason)
         return
 
+    metrics_db_uri = self.metrics_db_uri
     try:
         if upgrade_required(db_uri):
             run_schema_upgrade(db_uri)
+        if metrics_db_uri and upgrade_required(metrics_db_uri):
+            run_schema_upgrade(metrics_db_uri)
         schema_upgrade_required = upgrade_required(db_uri)
+        if metrics_db_uri:
+            schema_upgrade_required = schema_upgrade_required or upgrade_required(metrics_db_uri)
         _, version = check_schema_version(db_uri)
     except (OSError, SchemaToolError) as e:
         failure_reason = f"Failed to run the schema upgrade command: {e}"

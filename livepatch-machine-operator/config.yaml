@@ -836,6 +836,6 @@ options:
     type: boolean
     default: false
   profiler.profile_goroutines:
-    description: would profile separate concurrent running gorountines.
+    description: would profile separate concurrent running goroutines.
     default: false
     type: boolean
