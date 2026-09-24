@@ -23,11 +23,16 @@ class SchemaToolError(RuntimeError):
     """Raised when a schema-tool command fails unexpectedly."""
 
 
-def upgrade_required(db_uri: str) -> bool:
+def upgrade_required(db_uri: str, target: str | None = None) -> bool:
     """Check whether the database schema needs upgrading.
 
     Args:
         db_uri: the database connection string to check.
+        target: the schema target to check (e.g. ``livepatchdb`` or
+            ``timescale``). When ``None`` the tool's default target is used,
+            which corresponds to the primary ``livepatchdb`` schema. The
+            metrics/Timescale database must be checked with the Timescale-
+            specific target so its own migrations are evaluated.
 
     Returns:
         True if a schema upgrade is required.
@@ -37,6 +42,8 @@ def upgrade_required(db_uri: str) -> bool:
             unexpected (non 0/2) code.
     """
     _cmd = [f"{SERVER_SNAP_NAME}.{CHECK_SCHEMA_UPGRADE_COMMAND}", db_uri]
+    if target:
+        _cmd.extend(["--target", target])
     try:
         result = subprocess.run(_cmd, text=True, capture_output=True)  # nosec
     except OSError as e:
@@ -82,12 +89,21 @@ def check_schema_version(db_uri: str) -> Tuple[bool, str]:
     return False, result
 
 
-def run_schema_upgrade(master_uri: str) -> str:
-    """Run a schema upgrade against the desired Postgres URI."""
+def run_schema_upgrade(master_uri: str, target: str | None = None) -> str:
+    """Run a schema upgrade against the desired Postgres URI.
+
+    Args:
+        master_uri: the database connection string to migrate.
+        target: the schema target to migrate. ``None`` uses the tool's
+            default (primary) target; the metrics/Timescale database must
+            be migrated with the Timescale-specific target.
+    """
     _cmd = [
         f"{SERVER_SNAP_NAME}.{SCHEMA_UPGRADE_COMMAND}",
         master_uri,
     ]
+    if target:
+        _cmd.extend(["--target", target])
     result = "failed"
     try:
         result = subprocess.check_output(_cmd, text=True, stderr=subprocess.STDOUT)  # nosec

@@ -44,6 +44,7 @@ from constants.statuses import (
     LIVEPATCH_RUNNING,
     SCHEMA_UPGRADE_FAILED,
 )
+from constants.snap import SCHEMA_TARGET_TIMESCALE
 from relations import BothDatabaseRelationsError
 from util.schema_tool import SchemaToolError, run_schema_upgrade, upgrade_required
 from workload import SnapWorkload
@@ -219,9 +220,9 @@ class MachineReconciler:
             logger.info("database schema requires a migration; running the upgrade")
             run_schema_upgrade(db_uri)
             upgraded = True
-        if metrics_db_uri and upgrade_required(metrics_db_uri):
+        if metrics_db_uri and upgrade_required(metrics_db_uri, target=SCHEMA_TARGET_TIMESCALE):
             logger.info("metrics database schema requires a migration; running the upgrade")
-            run_schema_upgrade(metrics_db_uri)
+            run_schema_upgrade(metrics_db_uri, target=SCHEMA_TARGET_TIMESCALE)
             upgraded = True
         return upgraded
 
