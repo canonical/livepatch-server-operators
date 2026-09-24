@@ -39,12 +39,13 @@ from constants.statuses import (
     LIVEPATCH_FAILED_TO_CONFIGURE,
     LIVEPATCH_FAILED_TO_INSTALL,
     LIVEPATCH_FAILED_TO_RESTART,
+    LIVEPATCH_FAILED_TO_UPDATE_CA,
     LIVEPATCH_NOT_RUNNING,
     LIVEPATCH_RUNNING,
-    SCHEMA_UPGRADE_REQUIRED,
+    SCHEMA_UPGRADE_FAILED,
 )
 from relations import BothDatabaseRelationsError
-from util.schema_tool import check_schema_version
+from util.schema_tool import SchemaToolError, run_schema_upgrade, upgrade_required
 from workload import SnapWorkload
 
 logger = logging.getLogger(__name__)
@@ -55,19 +56,15 @@ TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt
 class MachineReconciler:
     """Drives the machine towards the charm's goal state."""
 
-    def __init__(self, charm: Any, workload: SnapWorkload, app_state: Any, unit_state: Any) -> None:
+    def __init__(self, charm: Any, workload: SnapWorkload) -> None:
         """Construct.
 
         Args:
             charm: the charm being reconciled.
             workload: the Livepatch snap workload.
-            app_state: application-scoped peer relation state.
-            unit_state: unit-scoped peer relation state.
         """
         self._charm = charm
         self._workload = workload
-        self._state = app_state
-        self._unit_state = unit_state
         self.status: Optional[StatusBase] = None
 
     def reconcile(self, _: Any = None) -> None:
@@ -121,12 +118,20 @@ class MachineReconciler:
             self.status = self._database_pending_status()
             return
 
-        if not self._schema_migrated(db_uri, force_check=snap_changed):
-            self.status = BlockedStatus(SCHEMA_UPGRADE_REQUIRED)
+        try:
+            schema_upgraded = self._converge_schema(db_uri)
+        except (OSError, SchemaToolError) as e:
+            logger.error("failed to upgrade the database schema: %s", e)
+            self.status = BlockedStatus(SCHEMA_UPGRADE_FAILED)
             return
 
         # -- Converge trusted certificates and snap configuration.
-        ca_changed = self._converge_trusted_ca(config)
+        try:
+            ca_changed = self._converge_trusted_ca(config)
+        except (OSError, subprocess.CalledProcessError) as e:
+            logger.error("failed to update the trusted CA certificate: %s", e)
+            self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_UPDATE_CA)
+            return
         desired = config.to_snap_config(
             db_uri=db_uri,
             is_leader=charm.unit.is_leader(),
@@ -139,7 +144,6 @@ class MachineReconciler:
             logger.error("failed to apply snap configuration: %s", e)
             self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_CONFIGURE)
             return
-        restart_cue = self._pending_restart_cue()
 
         # -- Converge the daemon.
         running = self._workload.running
@@ -147,7 +151,7 @@ class MachineReconciler:
             "snap installed or refreshed": snap_changed,
             "trusted CA certificate updated": ca_changed,
             "snap configuration changed": config_changed,
-            "restart cue pending": restart_cue is not None,
+            "database schema upgraded": schema_upgraded,
             "daemon not running": not running,
         }
         if any(restart_reasons.values()):
@@ -160,10 +164,6 @@ class MachineReconciler:
                 self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_RESTART)
                 return
             running = self._workload.running
-            if restart_cue is not None:
-                # Only recorded once the restart succeeded, so a failure is
-                # retried on the next hook.
-                self._unit_state.applied_restart_cue = restart_cue
 
         self.status = ActiveStatus(LIVEPATCH_RUNNING) if running else MaintenanceStatus(LIVEPATCH_NOT_RUNNING)
 
@@ -192,56 +192,33 @@ class MachineReconciler:
             return WaitingStatus(AWAIT_POSTGRES_URI)
         return WaitingStatus(AWAIT_POSTGRES_PRIMARY)
 
-    def _pending_restart_cue(self) -> Optional[int]:
-        """Report an outstanding restart request from the leader.
-
-        Actions that change the workload without changing its configuration
-        bump a counter in application data. Each unit records the value it has
-        acted on in its own unit data, so the request is applied exactly once
-        per unit.
-
-        Returns:
-            The cue value to act on, or None if there is nothing outstanding.
-        """
-        if not self._state.is_ready() or not self._unit_state.is_ready():
-            return None
-        cue = self._state.restart_cue or 0
-        if cue == (self._unit_state.applied_restart_cue or 0):
-            return None
-        return cue
-
     # -- Schema helpers.
 
-    def _schema_migrated(self, db_uri: str, force_check: bool) -> bool:
-        """Check that the database schema has been migrated.
+    def _converge_schema(self, db_uri: str) -> bool:
+        """Migrate the database schema, if it is not already up to date.
 
-        A positive result is cached per unit against the connection string it
-        was obtained for, and reused on later calls unless `force_check` is set.
+        Every unit runs this on every reconcile; the snap serializes concurrent
+        upgrade attempts internally, so no peer coordination is needed here.
 
         Args:
-            db_uri: the database connection string to check.
-            force_check: True to bypass the cache and check unconditionally.
+            db_uri: the database connection string to check and migrate.
 
         Returns:
-            True if the schema is up to date.
+            True if a migration was performed this reconcile.
+
+        Raises:
+            SchemaToolError: if the check or upgrade command failed.
         """
-        if not force_check and self._unit_state.is_ready() and self._unit_state.schema_migrated_uri == db_uri:
-            return True
-
-        upgrade_required, version = check_schema_version(db_uri)
-        if upgrade_required:
-            logger.warning("database schema requires a migration")
+        if not upgrade_required(db_uri):
             return False
-
-        logger.info("database has been migrated; current version: %s", version)
-        if self._unit_state.is_ready():
-            self._unit_state.schema_migrated_uri = db_uri
+        logger.info("database schema requires a migration; running the upgrade")
+        run_schema_upgrade(db_uri)
         return True
 
     # -- Certificate helpers.
 
     def _converge_trusted_ca(self, config: CharmConfig) -> bool:
-        """Install the configured contracts CA certificate, if it changed.
+        """Install or remove the configured contracts CA certificate, if it changed.
 
         Rewriting the trust store and refreshing it is expensive, so it only
         happens when the configured certificate differs from the installed one.
@@ -253,15 +230,31 @@ class MachineReconciler:
             True if the trust store was updated.
         """
         desired = config.contracts_ca
-        if desired is None:
-            logger.debug("ca config not set")
-            return False
-
         path = Path(TRUSTED_CA_FILENAME)
-        if path.exists() and path.read_text() == desired:
-            return False
+        current_ca = path.read_text() if path.exists() else None
 
-        path.write_text(desired)
-        result = subprocess.check_output(["update-ca-certificates", "--fresh"], stderr=subprocess.STDOUT)  # nosec
+        if config.has_invalid_contracts_ca:
+            return False
+        if desired is None:
+            if current_ca is None:
+                logger.debug("ca config not set")
+                return False
+            path.unlink()
+        else:
+            if current_ca == desired:
+                return False
+            path.write_text(desired)
+
+        try:
+            result = subprocess.check_output(
+                ["update-ca-certificates", "--fresh"], text=True, stderr=subprocess.STDOUT
+            )  # nosec
+        except (OSError, subprocess.CalledProcessError):
+            # Restore the source file so the next reconcile retries the refresh.
+            if current_ca is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(current_ca)
+            raise
         logger.info("output update-ca-certificates: %s", result)
         return True

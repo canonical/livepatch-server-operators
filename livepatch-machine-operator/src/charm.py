@@ -86,6 +86,8 @@ class OperatorMachineCharm(CharmBase):
         Returns:
             The connection string, or None if the relation is not in use.
         """
+        if not relations.is_legacy_database_relation_activated(self):
+            return None
         if not self._unit_state.is_ready():
             return None
         uri = self._unit_state.legacy_db_uri
@@ -108,7 +110,7 @@ class OperatorMachineCharm(CharmBase):
         self._unit_state = State(self.unit, lambda: self.model.get_relation(PEER_RELATION))
 
         self.workload = SnapWorkload()
-        self.reconciler = MachineReconciler(self, self.workload, self._state, self._unit_state)
+        self.reconciler = MachineReconciler(self, self.workload)
 
         # Database (legacy).
         self.db = pgsql.PostgreSQLClient(self, DATABASE_RELATION_LEGACY)
@@ -291,18 +293,6 @@ class OperatorMachineCharm(CharmBase):
     ###########
     # UTILITY #
     ###########
-
-    def _restart_all_units(self) -> None:
-        """Reconcile this unit, and cue the other units to reconcile.
-
-        Bumping a value in the peer relation data fires a relation-changed
-        event on the other units, which makes them run their own converge path.
-        Python ints are unbounded, so no overflow can occur here.
-        """
-        if not self.unit.is_leader() or not self._state.is_ready():
-            return
-        self._state.restart_cue = 1 + (self._state.restart_cue or 0)
-        self._reconcile(None)
 
     def set_status_and_log(self, msg, status) -> None:
         """Log and set unit status simultaneously.
