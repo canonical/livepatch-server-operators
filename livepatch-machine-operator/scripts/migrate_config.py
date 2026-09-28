@@ -18,6 +18,16 @@ def parse_input_file(input_file_path: str):
         return yaml_data
 
 
+def _restore_machine_only_migrations(settings, converted_options, removed_keys):
+    psql_dbname = settings.get("psql_dbname", {}).get("value")
+    if psql_dbname in [None, ""]:
+        return
+
+    converted_options["database.name"] = psql_dbname
+    if "psql_dbname" in removed_keys:
+        removed_keys.remove("psql_dbname")
+
+
 def main(input_file, output_file):
     json_content = parse_input_file(input_file)
     settings = json_content.get("options", {})
@@ -27,6 +37,7 @@ def main(input_file, output_file):
         print("No settings found")
         exit(-1)
     converted_options, removed_keys, unrecognized_keys = migrate_config(settings)
+    _restore_machine_only_migrations(settings, converted_options, removed_keys)
     print(
         "These keys were present in your configuration",
         "but they are removed for the new config.\n",
