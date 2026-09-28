@@ -1,986 +1,701 @@
 # Copyright 2024 Canonical Ltd.
 # See LICENSE file for licensing details.
-#
-# Learn more about testing at: https://juju.is/docs/sdk/testing
-"""Unit tests module."""
+
+"""Unit tests for the Livepatch machine charm using state-transition testing."""
+
 import os
 import tempfile
-import unittest
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import Mock, patch
 
+import pytest
 import yaml
-from ops.model import StatusBase
-from ops.testing import ActionFailed, Harness
+from ops import testing
 
-import src.charm
+from charm import OperatorMachineCharm
+from constants.snap import SERVER_SNAP_REVISION
+from constants.statuses import LIVEPATCH_NOT_RUNNING, LIVEPATCH_RUNNING
 
+CHARM_ROOT = Path(__file__).resolve().parent.parent.parent
 APP_NAME = "canonical-livepatch-server"
 
-
-# pylint: disable=too-many-public-methods
-class TestCharm(unittest.TestCase):
-    """Unit tests class."""
-
-    def setUp(self):
-        self.harness = Harness(src.charm.OperatorMachineCharm)
-        self.addCleanup(self.harness.cleanup)
-        self.harness.disable_hooks()
-
-        self.snap_mock, snap_cache_patch = self.new_mock_snap_cache()
-        snap_cache_patch.start()
-        self.addCleanup(snap_cache_patch.stop)
-
-        self.harness.begin()
-
-    def new_mock_snap_cache(self):
-        """create a mock snap cache"""
-        mock = Mock()
-        snap_cache = {"canonical-livepatch-server": mock}
-        return mock, patch("src.charm.SnapCache", return_value=snap_cache)
-
-    def test_snap_config(self):
-        """Test snap config is set as expected."""
-        self.start_leader_unit()
-
-        expected_config = {
-            "lp.patch-sync.sync-tiers": True,
-        }
-
-        def snap_set_mock(prefixed_configuration: Dict[str, Any]):
-            self.assertEqual(prefixed_configuration, prefixed_configuration | expected_config)
-
-        self.snap_mock.set = Mock(side_effect=snap_set_mock)
-        self.harness.update_config({"patch-sync.sync-tiers": True})
-        self.assertTrue(self.snap_mock.set.called)
-
-    # wokeignore:rule=master
-    def test_legacy_db_master_changed(self):
-        """test `_legacy_db_master_changed event` handler."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        with patch("subprocess.check_call", check_call_mock):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", check_output_mock):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch",
-                        # wokeignore:rule=master
-                        "master": "host=host port=5432 dbname=livepatch user=username password=password",
-                    },
-                )
-
-                self.assertEqual(self.harness.charm._state.db_uri, "postgresql://username:password@host:5432/livepatch")
-
-    def test_legacy_db_standby_changed(self):
-        """test `_legacy_db_standby_changed event` handler."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        with patch("subprocess.check_call", check_call_mock):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", check_output_mock):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch",
-                        "standbys": "host=standby-host port=5432 dbname=livepatch user=username password=password",
-                    },
-                )
-
-                self.assertEqual(
-                    self.harness.charm._state.db_ro_uris, ["postgresql://username:password@standby-host:5432/livepatch"]
-                )
-
-    # wokeignore:rule=master
-    def test_legacy_db_relation__both_master_and_standby(self):
-        """test legacy db relation handlers' function when both primary and standby units are provided."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        with patch("subprocess.check_call", check_call_mock):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", check_output_mock):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch",
-                        # wokeignore:rule=master
-                        "master": "host=host port=5432 dbname=livepatch user=username password=password",
-                    },
-                )
-
-                self.assertEqual(self.harness.charm._state.db_uri, "postgresql://username:password@host:5432/livepatch")
-
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch",
-                        # wokeignore:rule=master
-                        "master": "host=host port=5432 dbname=livepatch user=username password=password",
-                        "standbys": "host=standby-host port=5432 dbname=livepatch user=username password=password",
-                    },
-                )
-
-                self.assertEqual(
-                    self.harness.charm._state.db_ro_uris, ["postgresql://username:password@standby-host:5432/livepatch"]
-                )
-
-    def test_database_relations_are_mutually_exclusive__legacy_first(self):
-        """test db relations are mutually exclusive for legacy relations."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        with patch("subprocess.check_call", return_value=None):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", return_value=b""):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-        self.harness.update_relation_data(legacy_db_rel_id, "postgres", {})
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        with self.assertRaises(Exception) as cm:
-            self.harness.update_relation_data(
-                db_rel_id,
-                "postgres-new",
-                {
-                    "username": "some-username",
-                    "password": "some-password",
-                    "endpoints": "some.database.host,some.other.database.host",
-                },
-            )
-
-        self.assertEqual(
-            str(cm.exception),
-            "Integration with both database relations is not allowed; `database-legacy` is already activated.",
-        )
-
-    def test_database_relations_are_mutually_exclusive__standard_first(self):
-        """Test db relations are mutually exclusive."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        with self.assertRaises(Exception) as cm:
-            # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-            # from juju help-tools, so we need to mock calls that try to spawn a
-            # subprocess.
-            with patch("subprocess.check_call", return_value=None):  # Stubs `leader-set` call.
-                with patch("subprocess.check_output", return_value=b""):  # Stubs `leader-get` call.
-                    self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-
-        self.assertEqual(
-            str(cm.exception),
-            "Integration with both database relations is not allowed; `database` is already activated.",
-        )
-
-    def test_standard_database_relation__success(self):
-        """Test standard db relation successfully integrates with database."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        self.assertEqual(
-            self.harness.charm._state.db_uri,
-            "postgresql://some-username:some-password@some.database.host/livepatch",
-        )
-
-    def test_website_relation__success(self):
-        """Test website relation integrates successfully."""
-        self.harness.update_config({"server.server-address": "some-host:9999"})
-
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        rel_id = self.harness.add_relation("website", "reverse-proxy")
-        self.harness.add_relation_unit(rel_id, "reverse-proxy/0")
-        rel_data = self.harness.get_relation_data(rel_id, self.harness.charm.unit)
-
-        self.assertEqual(rel_data["port"], "9999")
-
-    def test_standard_database_relation__empty_username_or_password(self):
-        """Test standard db relation does not update the db_uri if credentials are not set in relation data."""
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "",
-                "password": "",
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        # We should verify at this point the db_uri is not set in the state, as
-        # this is perceived as an incomplete integration.
-        self.assertIsNone(self.harness.charm._state.db_uri)
-
-    def test_pro_airgapped_server_relation__success(self):
-        """Test pro-airgapped-server relation."""
-        self.start_leader_unit()
-
-        expected_config = {
-            "lp.contracts.enabled": True,
-            "lp.contracts.url": "scheme://some.host.name:9999",
-        }
-
-        def snap_set_mock(prefixed_configuration: Dict[str, Any]):
-            self.assertEqual(prefixed_configuration, prefixed_configuration | expected_config)
-            self.assertNotIn("lp.contracts.user", prefixed_configuration)
-            self.assertNotIn("lp.contracts.password", prefixed_configuration)
-
-        self.snap_mock.set = Mock(side_effect=snap_set_mock)
-        pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-        self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-        self.harness.update_relation_data(
-            pro_rel_id,
-            "pro-airgapped-server/0",
-            {
-                "scheme": "scheme",
-                "hostname": "some.host.name",
-                "port": "9999",
-            },
-        )
-        self.assertTrue(self.snap_mock.set.called)
-
-    def test_pro_airgapped_server_relation__multiple_units(self):
-        """Test pro-airgapped-server relation when there are multiple units."""
-        self.start_leader_unit()
-
-        def update_snap_set_mock(expected_enabled: bool, expected_url: str):
-            expected_config = {
-                "lp.contracts.enabled": expected_enabled,
-                "lp.contracts.url": expected_url,
-            }
-
-            def snap_set_mock(prefixed_configuration: Dict[str, Any]):
-                self.assertEqual(prefixed_configuration, prefixed_configuration | expected_config)
-                self.assertNotIn("lp.contracts.user", prefixed_configuration)
-                self.assertNotIn("lp.contracts.password", prefixed_configuration)
-
-            self.snap_mock.set = Mock(side_effect=snap_set_mock)
-
-        update_snap_set_mock(True, "scheme://first.host:9999")
-        pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-        self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-        self.harness.update_relation_data(
-            pro_rel_id,
-            "pro-airgapped-server/0",
-            {
-                "scheme": "scheme",
-                "hostname": "first.host",
-                "port": "9999",
-            },
-        )
-        self.assertTrue(self.snap_mock.set.called)
-
-        # Adding another unit of `pro-airgapped-server`, but this new unit should not
-        # affect the Livepatch server configuration.
-        update_snap_set_mock(True, "scheme://first.host:9999")
-        self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/1")
-        self.harness.update_relation_data(
-            pro_rel_id,
-            "pro-airgapped-server/1",
-            {
-                "scheme": "scheme",
-                "hostname": "second.host",
-                "port": "9999",
-            },
-        )
-        self.assertTrue(self.snap_mock.set.called)
-
-    def test_pro_airgapped_server_relation__multiple_units_one_departs(self):
-        """Test pro-airgapped-server relation when one of the relation units departs but the other one not."""
-        self.start_leader_unit()
-
-        def update_snap_set_mock(expected_enabled: bool, expected_url: str):
-            expected_config = {
-                "lp.contracts.enabled": expected_enabled,
-                "lp.contracts.url": expected_url,
-            }
-
-            def snap_set_mock(prefixed_configuration: Dict[str, Any]):
-                self.assertEqual(prefixed_configuration, prefixed_configuration | expected_config)
-                self.assertNotIn("lp.contracts.user", prefixed_configuration)
-                self.assertNotIn("lp.contracts.password", prefixed_configuration)
-
-            self.snap_mock.set = Mock(side_effect=snap_set_mock)
-
-        update_snap_set_mock(True, "scheme://first.host:9999")
-        pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-        self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-        self.harness.update_relation_data(
-            pro_rel_id,
-            "pro-airgapped-server/0",
-            {
-                "scheme": "scheme",
-                "hostname": "first.host",
-                "port": "9999",
-            },
-        )
-        self.assertTrue(self.snap_mock.set.called)
-
-        # Make sure adding another unit doesn't change the last contracts URL.
-        update_snap_set_mock(True, "scheme://first.host:9999")
-        self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/1")
-        self.harness.update_relation_data(
-            pro_rel_id,
-            "pro-airgapped-server/1",
-            {
-                "scheme": "scheme",
-                "hostname": "second.host",
-                "port": "9999",
-            },
-        )
-        self.assertTrue(self.snap_mock.set.called)
-
-        # Now we drop remove the first `pro-airgapped-server` unit. The charm should
-        # use the second unit address.
-        update_snap_set_mock(True, "scheme://second.host:9999")
-        self.harness.remove_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-        self.assertTrue(self.snap_mock.set.called)
-
-    def test_pro_airgapped_server_relation__relation_removed(self):
-        """Test when pro-airgapped-server is removed."""
-        self.start_leader_unit()
-
-        pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-        self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-        self.harness.update_relation_data(
-            pro_rel_id,
-            "pro-airgapped-server/0",
-            {
-                "scheme": "scheme",
-                "hostname": "first.host",
-                "port": "9999",
-            },
-        )
-
-        expected_config = {
-            "lp.contracts.enabled": False,
-        }
-
-        # Now we remove the relation. The charm should disable use of contracts.
-        def snap_set_mock(prefixed_configuration: Dict[str, Any]):
-            self.assertEqual(prefixed_configuration, prefixed_configuration | expected_config)
-
-        self.snap_mock.set = Mock(side_effect=snap_set_mock)
-        self.harness.remove_relation(pro_rel_id)
-        self.assertTrue(self.snap_mock.set.called)
-
-    def test_install(self):
-        """test install event handler."""
-        self.snap_mock.present = False
-        self.snap_mock.services = {"livepatch": {"active": False}}
-        self.snap_mock.ensure.return_value = None
-        self.snap_mock.hold.return_value = None
-        self.snap_mock.set.return_value = None
-        self.snap_mock.restart.return_value = None
-
-        def subprocess_check_output_side_effect(cmd: str, *args, **kwargs):
+DEFAULT_CONFIG = {
+    "server.url-template": "https://example.com/{filename}",
+    "server.server-address": "0.0.0.0:8080",
+}
+
+
+@pytest.fixture(scope="module")
+def ctx():
+    """Build a scenario Context with explicit metadata/config/actions."""
+    meta = yaml.safe_load((CHARM_ROOT / "charmcraft.yaml").read_text())
+    config = yaml.safe_load((CHARM_ROOT / "config.yaml").read_text())
+    actions = yaml.safe_load((CHARM_ROOT / "actions.yaml").read_text())
+    return testing.Context(OperatorMachineCharm, meta=meta, config=config, actions=actions)
+
+
+@pytest.fixture
+def snap_set():
+    """Record snap.set calls and provide a consistent snap mock."""
+    with patch("workload.SnapCache") as snap_cache_cls:
+        cache = snap_cache_cls.return_value
+        snap = cache.get.return_value
+        snap.is_installed.return_value = True
+        snap.status.return_value = "enabled"
+        snap.version.return_value = "test-version"
+        snap.present = True
+        snap.revision = SERVER_SNAP_REVISION
+        snap.services = {"livepatch": {"active": True}}
+        recorded: list[dict] = []
+
+        def _set(delta: Dict[str, Any]) -> None:
+            recorded.append(dict(delta))
+
+        def _get(key: str, typed: bool = False) -> Any:
+            merged = {}
+            for d in recorded:
+                merged.update(d)
+            if not typed:
+                return merged.get(key, "")
+            # snapd returns `snap get lp -d` as a nested tree; rebuild it so
+            # current_config() reflects values already written by the charm.
+            nested: Dict[str, Any] = {}
+            for dotted, value in merged.items():
+                node = nested
+                parts = dotted.split(".")
+                for part in parts[:-1]:
+                    node = node.setdefault(part, {})
+                node[parts[-1]] = value
+            return nested.get(key, {})
+
+        snap.set.side_effect = _set
+        snap.get.side_effect = _get
+        yield recorded
+
+
+@pytest.fixture
+def schema_check():
+    """Mock the schema version check command to report the schema is current."""
+    with (
+        patch("subprocess.check_output") as check_output,
+        patch("subprocess.run") as mock_run,
+        patch("subprocess.check_call") as check_call,
+    ):
+        mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+        check_call.return_value = 0
+
+        def _side_effect(cmd, *args, **kwargs):
             if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return "\n"
-            if cmd[0] == "leader-get":
-                return b""
-            raise AssertionError("unexpected call")
-
-        subprocess_check_output_mock = Mock(side_effect=subprocess_check_output_side_effect)
-        schema_version_check_patch = patch("subprocess.check_output", subprocess_check_output_mock)
-        self.addCleanup(schema_version_check_patch.stop)
-        schema_version_check_patch.start()
-
-        self.harness.enable_hooks()
-
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-
-        self.harness.charm.on.install.emit()
-
-        self.assertEqual(self.harness.model.unit.status.message, "Snap installed! Waiting on postgres relation...")
-
-    def test_install__already_installed(self):
-        """test install event handler, when the livepatch snap is already installed."""
-        self.snap_mock.present = True
-        self.snap_mock.services = {"livepatch": {"active": False}}
-        self.snap_mock.set.return_value = None
-        self.snap_mock.restart.return_value = None
-
-        def subprocess_check_output_side_effect(cmd: str, *args, **kwargs):
-            if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return "\n"
-            if cmd[0] == "leader-get":
-                return b""
-            raise AssertionError("unexpected call")
-
-        subprocess_check_output_mock = Mock(side_effect=subprocess_check_output_side_effect)
-        schema_version_check_patch = patch("subprocess.check_output", subprocess_check_output_mock)
-        self.addCleanup(schema_version_check_patch.stop)
-        schema_version_check_patch.start()
-
-        self.harness.enable_hooks()
-
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
-
-        self.harness.charm.on.install.emit()
-
-        self.assertEqual(self.harness.model.unit.status.message, "Livepatch snap already installed...")
-
-    def start_leader_unit(self):
-        """starts leader unit by doing a full configuration/integration."""
-        self.snap_mock.present = True
-        self.snap_mock.services = {"livepatch": {"active": False}}
-        self.snap_mock.set.return_value = None
-        self.snap_mock.restart.return_value = None
-
-        def subprocess_check_output_side_effect(cmd: str, *args, **kwargs):
-            if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return "\n"
+                return "some-version"
             if cmd[0] == "leader-get":
                 return b""
             if cmd[0] == "update-ca-certificates":
                 return b"updated-ca-certs"
-            raise AssertionError("unexpected call")
+            raise AssertionError(f"unexpected call: {cmd}")
 
-        subprocess_check_output_mock = Mock(side_effect=subprocess_check_output_side_effect)
-        schema_version_check_patch = patch("subprocess.check_output", subprocess_check_output_mock)
-        self.addCleanup(schema_version_check_patch.stop)
-        schema_version_check_patch.start()
+        check_output.side_effect = _side_effect
+        yield check_output
 
-        self.harness.enable_hooks()
 
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
+def _leader_state(relations=None, config=None, **kwargs):
+    """Return a leader State with the livepatch peer relation and default config."""
+    rels = list(relations) if relations else []
+    rels.append(testing.PeerRelation("livepatch"))
+    cfg = {**DEFAULT_CONFIG, **(config or {})}
+    return testing.State(leader=True, relations=rels, config=cfg, **kwargs)
 
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",
-                "endpoints": "some.database.host,some.other.database.host",
+
+def _standard_db_relation():
+    """Return a standard database relation with valid credentials."""
+    return testing.Relation(
+        "database",
+        remote_app_name="postgres-new",
+        remote_app_data={
+            "username": "some-username",
+            "password": "some-password",
+            "endpoints": "some.database.host,some.other.database.host",
+        },
+    )
+
+
+class TestSnapConfig:
+    """Tests that snap configuration is computed correctly."""
+
+    def test_snap_config(self, ctx, snap_set, schema_check):
+        """Test snap config is set as expected."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard], config={"patch-sync.sync-tiers": True})
+        ctx.run(ctx.on.config_changed(), state_in)
+        assert any(delta.get("lp.patch-sync.sync-tiers") == "True" for delta in snap_set)
+
+
+class TestLegacyDatabase:
+    """Tests for the legacy database relation."""
+
+    def test_legacy_db_master_changed(self, ctx, snap_set, schema_check):
+        """Test legacy db master data is captured and used."""
+        legacy = testing.Relation("database-legacy", remote_app_name="postgres")
+        peer = testing.PeerRelation(
+            "livepatch",
+            local_unit_data={"legacy_db_uri": '"postgres://user:pass@host:5432/livepatch"'},
+        )
+        state_in = testing.State(leader=True, relations=[legacy, peer], config=DEFAULT_CONFIG)
+
+        state_out = ctx.run(ctx.on.config_changed(), state_in)
+
+        assert state_out.unit_status == testing.ActiveStatus(LIVEPATCH_RUNNING)
+        assert any("lp.database.connection-string" in delta for delta in snap_set)
+
+    def test_legacy_db_standby_changed(self, ctx, snap_set, schema_check):
+        """Test legacy db standby data is captured."""
+        legacy = testing.Relation("database-legacy", remote_app_name="postgres")
+        peer = testing.PeerRelation(
+            "livepatch",
+            local_unit_data={"legacy_db_uri": "postgresql://user:pass@host/livepatch"},
+        )
+        state_in = testing.State(leader=True, relations=[legacy, peer], config=DEFAULT_CONFIG)
+
+        state_out = ctx.run(ctx.on.relation_changed(legacy, remote_unit=0), state_in)
+
+        livepatch_rel = state_out.get_relation(peer.id)
+        assert livepatch_rel.local_unit_data.get("legacy_db_uri") is not None
+
+    def test_legacy_db_both_master_and_standby(self, ctx, snap_set, schema_check):
+        """Test legacy db relation with both primary and standby units."""
+        legacy = testing.Relation("database-legacy", remote_app_name="postgres")
+        peer = testing.PeerRelation(
+            "livepatch",
+            local_unit_data={
+                "legacy_db_uri": "postgresql://user:pass@host/livepatch",
+                "legacy_db_ro_uris": "postgresql://user:pass@standby-host/livepatch",
             },
         )
+        state_in = testing.State(leader=True, relations=[legacy, peer], config=DEFAULT_CONFIG)
 
-        def set_snap_as_running(*args, **kwargs):
-            self.snap_mock.services = {"livepatch": {"active": True}}
+        state_out = ctx.run(ctx.on.relation_changed(legacy, remote_unit=0), state_in)
 
-        self.snap_mock.restart.side_effect = set_snap_as_running
+        livepatch_rel = state_out.get_relation(peer.id)
+        assert livepatch_rel.local_unit_data.get("legacy_db_uri") is not None
+        assert livepatch_rel.local_unit_data.get("legacy_db_ro_uris") is not None
 
-        self.harness.update_config({"server.url-template": "some-url-template"})
 
-        self.assertEqual(self.harness.model.unit.status.message, "Livepatch running!")
+class TestDatabaseRelations:
+    """Tests for standard and mutual-exclusion database behaviour."""
 
-    def test_update_status__running(self):
-        """test `update-status` event handler."""
-        self.start_leader_unit()
-
-        self.harness.charm.on.update_status.emit()
-
-        self.assertEqual(self.harness.model.unit.status.message, "Livepatch running!")
-
-    def test_update_status__not_running_after_being_active(self):
-        """test `update-status` event handler when service is not running (after it was being active)."""
-        self.start_leader_unit()
-
-        self.snap_mock.services = {"livepatch": {"active": False}}  # mark service as stopped
-
-        self.harness.charm.on.update_status.emit()
-
-        self.assertEqual(self.harness.model.unit.status.message, "Livepatch is not running.")
-        self.assertEqual(self.harness.model.unit.status.name, "maintenance")
-
-    def test_update_status__not_running_after_not_being_active(self):
-        """test `update-status` event handler when service is not running (and wasn't running before)."""
-        self.start_leader_unit()
-
-        self.snap_mock.services = {"livepatch": {"active": False}}  # mark service as stopped
-
-        class MockStatus(StatusBase):
-            """Mock status class to make sure this type of status is unknown to the code."""
-
-            name = "some fake status"
-
-        self.harness.model.unit.status = MockStatus("some fake message")
-
-        # We should verify that the state is not changed in this case.
-        last_status_message = self.harness.model.unit.status.message
-        last_status_name = self.harness.model.unit.status.name
-
-        self.harness.charm.on.update_status.emit()
-
-        self.assertEqual(self.harness.model.unit.status.message, last_status_message)
-        self.assertEqual(self.harness.model.unit.status.name, last_status_name)
-
-    def test_start(self):
-        """test successfully running livepatch."""
-        self.start_leader_unit()
-
-    def test_enable_action__success(self):
-        """test `enable` action."""
-        self.start_leader_unit()
-        self.snap_mock.get.return_value = "some-token"
-
-        result = self.harness.run_action("enable", {"token": "some-token"})
-
-        self.snap_mock.set.assert_called_with({"token": "some-token"})
-        self.snap_mock.get.assert_called_with("token")
-        self.assertEqual(result.results["enabled"], "true")
-
-    def test_enable_action__empty_token(self):
-        """test `enable` action when provided token is empty."""
-        self.start_leader_unit()
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("enable", {"token": ""})
-
-        self.assertEqual(ex.exception.message, "No token provided.")
-
-    def test_enable_action__empty_retrieved_token(self):
-        """test `enable` action when provided token cannot be set in the snap's configuration."""
-        self.start_leader_unit()
-        self.snap_mock.get.return_value = ""  # retrieved token
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("enable", {"token": "some-token"})
-
-        self.assertEqual(ex.exception.message, "Failed to enable Ubuntu Pro, is your token correct?")
-
-    def test_enable_action__snap_not_installed(self):
-        """test `enable` action when livepatch snap is not installed."""
-        self.snap_mock.present = False
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("enable", {"token": "some-token"})
-
-        self.assertEqual(ex.exception.message, "Livepatch snap is not installed.")
-
-    def test_restart_action__success(self):
-        """test `restart` action."""
-        self.start_leader_unit()
-        self.snap_mock.services = {"livepatch": {"active": False}}  # mark service as stopped
-
-        def happy_restart(services: List[str], *args, **kwargs):
-            self.snap_mock.services = {"livepatch": {"active": True}}
-
-        self.snap_mock.restart = Mock(side_effect=happy_restart)
-
-        result = self.harness.run_action("restart")
-
-        self.snap_mock.restart.assert_called_with(["livepatch"])
-        self.assertEqual(result.results["restarted"], "true")
-
-    def test_restart_action__failed_restart(self):
-        """test `restart` action when service is not running after restart."""
-        self.start_leader_unit()
-        self.snap_mock.services = {"livepatch": {"active": False}}  # mark service as stopped
-        self.snap_mock.restart = Mock(return_value=None)
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("restart", {})
-
-        self.snap_mock.restart.assert_called_with(["livepatch"])
-        self.assertEqual(ex.exception.message, "Server failed to restart.")
-
-    def test_restart_action__snap_not_installed(self):
-        """test `restart` action when snap is not installed."""
-        self.start_leader_unit()
-        self.snap_mock.present = False
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("restart", {})
-
-        self.assertEqual(
-            ex.exception.message, "Livepatch server failed to restart, as the server snap is not installed."
+    def test_database_relations_are_mutually_exclusive__legacy_first(self, ctx, snap_set):
+        """Test adding standard relation when legacy is active is blocked."""
+        legacy = testing.Relation("database-legacy", remote_app_name="postgres")
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[legacy, standard])
+        state_out = ctx.run(ctx.on.relation_changed(standard), state_in)
+        assert state_out.unit_status == testing.BlockedStatus(
+            "Integration with both database relations is not allowed; " "use either `database` or `database-legacy`."
         )
 
-    def test_schema_upgrade_action__success(self):
-        """test `schema-upgrade` action."""
-        self.snap_mock.present = True
-        self.snap_mock.services = {"livepatch": {"active": False}}
-        self.snap_mock.set.return_value = None
-        self.snap_mock.restart.return_value = None
+    def test_database_relations_are_mutually_exclusive__standard_first(self, ctx, snap_set):
+        """Test adding legacy relation when standard is active is blocked."""
+        standard = _standard_db_relation()
+        legacy = testing.Relation("database-legacy", remote_app_name="postgres")
+        state_in = _leader_state(relations=[standard, legacy])
+        state_out = ctx.run(ctx.on.relation_changed(standard), state_in)
+        assert state_out.unit_status == testing.BlockedStatus(
+            "Integration with both database relations is not allowed; " "use either `database` or `database-legacy`."
+        )
 
-        check_schema_version_check_output = "Error: database not initialized"
+    def test_standard_database_relation__success(self, ctx, snap_set, schema_check):
+        """Test standard db relation successfully integrates with database."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+        state_out = ctx.run(ctx.on.relation_changed(standard), state_in)
+        assert state_out.unit_status == testing.ActiveStatus(LIVEPATCH_RUNNING)
+        assert any("lp.database.connection-string" in delta for delta in snap_set)
 
-        def subprocess_check_output_side_effect(cmd: str, *args, **kwargs):
+    def test_standard_database_relation__empty_username_or_password(self, ctx, snap_set):
+        """Test standard db relation does not update the db_uri if credentials are empty."""
+        standard = testing.Relation(
+            "database",
+            remote_app_name="postgres-new",
+            remote_app_data={"username": "", "password": "", "endpoints": "some.database.host"},
+        )
+        state_in = _leader_state(relations=[standard])
+        state_out = ctx.run(ctx.on.relation_changed(standard), state_in)
+        assert state_out.unit_status != testing.ActiveStatus(LIVEPATCH_RUNNING)
+
+
+class TestWebsiteRelation:
+    """Tests for the website relation."""
+
+    def test_website_relation__success(self, ctx, snap_set, schema_check):
+        """Test website relation integrates successfully."""
+        standard = _standard_db_relation()
+        website = testing.Relation("website", remote_app_name="reverse-proxy")
+        state_in = _leader_state(relations=[standard, website], config={"server.server-address": "some-host:9999"})
+        state_out = ctx.run(ctx.on.relation_changed(website, remote_unit=0), state_in)
+        assert state_out.get_relation(website.id).local_unit_data["port"] == "9999"
+
+
+class TestProAirgappedServer:
+    """Tests for the pro-airgapped-server relation."""
+
+    def test_pro_airgapped_server_relation__success(self, ctx, snap_set, schema_check):
+        """Test pro-airgapped-server relation."""
+        standard = _standard_db_relation()
+        pro = testing.Relation(
+            "pro-airgapped-server",
+            remote_app_name="pro-airgapped-server",
+            remote_units_data={0: {"scheme": "scheme", "hostname": "some.host.name", "port": "9999"}},
+        )
+        state_in = _leader_state(relations=[standard, pro])
+        ctx.run(ctx.on.relation_changed(pro, remote_unit=0), state_in)
+        assert any(delta.get("lp.contracts.enabled") == "True" for delta in snap_set)
+        assert any("lp.contracts.url" in delta for delta in snap_set)
+
+    def test_pro_airgapped_server_relation__multiple_units(self, ctx, snap_set, schema_check):
+        """Test pro-airgapped-server relation when there are multiple units."""
+        standard = _standard_db_relation()
+        pro = testing.Relation(
+            "pro-airgapped-server",
+            remote_app_name="pro-airgapped-server",
+            remote_units_data={
+                0: {"scheme": "scheme", "hostname": "first.host", "port": "9999"},
+                1: {"scheme": "scheme", "hostname": "second.host", "port": "9999"},
+            },
+        )
+        state_in = _leader_state(relations=[standard, pro])
+        ctx.run(ctx.on.relation_changed(pro, remote_unit=0), state_in)
+        assert any(delta.get("lp.contracts.url") == "scheme://first.host:9999" for delta in snap_set)
+
+    def test_pro_airgapped_server_relation__multiple_units_one_departs(self, ctx, snap_set, schema_check):
+        """Test pro-airgapped-server relation when one unit departs."""
+        standard = _standard_db_relation()
+        pro = testing.Relation(
+            "pro-airgapped-server",
+            remote_app_name="pro-airgapped-server",
+            remote_units_data={
+                0: {"scheme": "scheme", "hostname": "first.host", "port": "9999"},
+                1: {"scheme": "scheme", "hostname": "second.host", "port": "9999"},
+            },
+        )
+        state_in = _leader_state(relations=[standard, pro])
+        ctx.run(ctx.on.relation_changed(pro, remote_unit=0), state_in)
+
+        pro_after = testing.Relation(
+            "pro-airgapped-server",
+            remote_app_name="pro-airgapped-server",
+            remote_units_data={1: {"scheme": "scheme", "hostname": "second.host", "port": "9999"}},
+        )
+        state_in2 = _leader_state(relations=[standard, pro_after])
+        ctx.run(ctx.on.relation_changed(pro_after, remote_unit=1), state_in2)
+        assert any(delta.get("lp.contracts.url") == "scheme://second.host:9999" for delta in snap_set)
+
+    def test_pro_airgapped_server_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test when pro-airgapped-server is removed."""
+        standard = _standard_db_relation()
+        pro = testing.Relation(
+            "pro-airgapped-server",
+            remote_app_name="pro-airgapped-server",
+            remote_units_data={0: {"scheme": "scheme", "hostname": "first.host", "port": "9999"}},
+        )
+        state_in = _leader_state(relations=[standard, pro])
+        ctx.run(ctx.on.relation_changed(pro, remote_unit=0), state_in)
+        ctx.run(ctx.on.relation_broken(pro), state_in)
+        assert any(delta.get("lp.contracts.enabled") == "False" for delta in snap_set)
+
+
+class TestMetricsDBRelation:
+    """Tests for the metrics-db (TimescaleDB) relation."""
+
+    def test_metrics_db_relation__success(self, ctx, snap_set, schema_check):
+        """Test metrics-db data configures the timescale connection string."""
+        standard = _standard_db_relation()
+        metrics_db = testing.Relation(
+            "metrics-db",
+            remote_app_name="postgresql",
+            remote_app_data={"username": "tsuser", "password": "tspass", "endpoints": "postgres.local:5432"},
+        )
+        state_in = _leader_state(relations=[standard, metrics_db])
+        ctx.run(ctx.on.relation_changed(metrics_db), state_in)
+        assert any(
+            delta.get("lp.timescale_db.connection-string")
+            == "postgresql://tsuser:tspass@postgres.local:5432/livepatch-metrics-db"
+            for delta in snap_set
+        )
+
+    def test_metrics_db_relation__missing_credentials(self, ctx, snap_set, schema_check):
+        """Test metrics-db relation without data does not set the connection string."""
+        standard = _standard_db_relation()
+        metrics_db = testing.Relation("metrics-db", remote_app_name="postgresql")
+        state_in = _leader_state(relations=[standard, metrics_db])
+        ctx.run(ctx.on.relation_changed(metrics_db), state_in)
+        assert not any(delta.get("lp.timescale_db.connection-string") for delta in snap_set)
+
+    def test_metrics_db_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test removing the metrics-db relation clears the connection string."""
+        standard = _standard_db_relation()
+        metrics_db = testing.Relation(
+            "metrics-db",
+            remote_app_name="postgresql",
+            remote_app_data={"username": "tsuser", "password": "tspass", "endpoints": "postgres.local:5432"},
+        )
+        state_in = _leader_state(relations=[standard, metrics_db])
+        ctx.run(ctx.on.relation_changed(metrics_db), state_in)
+
+        metrics_db_removed = testing.Relation("metrics-db", remote_app_name="postgresql")
+        state_removed = _leader_state(relations=[standard, metrics_db_removed])
+        ctx.run(ctx.on.relation_broken(metrics_db_removed), state_removed)
+        assert any(delta.get("lp.timescale_db.connection-string") == "" for delta in snap_set)
+
+
+class TestCVECatalogRelation:
+    """Tests for the cve-catalog relation."""
+
+    def test_cve_catalog_relation__success(self, ctx, snap_set, schema_check):
+        """Test cve-catalog data configures the CVE and LSN source URLs."""
+        standard = _standard_db_relation()
+        cve = testing.Relation(
+            "cve-catalog",
+            remote_app_name="livepatch-cve-service",
+            remote_app_data={"url": "scheme://some.host.name:9999"},
+        )
+        state_in = _leader_state(relations=[standard, cve])
+        ctx.run(ctx.on.relation_changed(cve), state_in)
+        assert any(delta.get("lp.cve-sync.source-url") == "scheme://some.host.name:9999" for delta in snap_set)
+        assert any(delta.get("lp.lsn-sync.source-url") == "scheme://some.host.name:9999" for delta in snap_set)
+
+    def test_cve_catalog_relation__applies_to_every_unit(self, ctx, snap_set, schema_check):
+        """Test cve-catalog data is applied on non-leader units too."""
+        standard = _standard_db_relation()
+        cve = testing.Relation(
+            "cve-catalog",
+            remote_app_name="livepatch-cve-service",
+            remote_app_data={"url": "scheme://some.host.name:9999"},
+        )
+        state_in = testing.State(
+            leader=False,
+            relations=[standard, cve, testing.PeerRelation("livepatch")],
+            config=DEFAULT_CONFIG,
+        )
+        ctx.run(ctx.on.relation_changed(cve), state_in)
+        assert any(delta.get("lp.cve-sync.source-url") == "scheme://some.host.name:9999" for delta in snap_set)
+
+    def test_cve_catalog_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test removing the cve-catalog relation clears the source URLs."""
+        standard = _standard_db_relation()
+        cve = testing.Relation(
+            "cve-catalog",
+            remote_app_name="livepatch-cve-service",
+            remote_app_data={"url": "scheme://some.host.name:9999"},
+        )
+        state_in = _leader_state(relations=[standard, cve])
+        ctx.run(ctx.on.relation_changed(cve), state_in)
+
+        cve_removed = testing.Relation("cve-catalog", remote_app_name="livepatch-cve-service")
+        state_removed = _leader_state(relations=[standard, cve_removed])
+        ctx.run(ctx.on.relation_broken(cve_removed), state_removed)
+        assert any(delta.get("lp.cve-sync.source-url") == "" for delta in snap_set)
+        assert any(delta.get("lp.lsn-sync.source-url") == "" for delta in snap_set)
+
+
+class TestSendOTLPRelation:
+    """Tests for the send-otlp relation."""
+
+    def test_send_otlp_relation__success(self, ctx, snap_set, schema_check):
+        """Test send-otlp data configures the OTLP metrics endpoint."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp",
+            remote_app_name="opentelemetry-collector",
+            remote_app_data={"endpoint": "otel-collector:4318", "protocol": "http", "insecure": "true"},
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert any(delta.get("lp.otel-metrics.otlp-endpoint") == "otel-collector:4318" for delta in snap_set)
+        assert any(delta.get("lp.otel-metrics.protocol") == "http" for delta in snap_set)
+        assert any(delta.get("lp.otel-metrics.insecure") == "True" for delta in snap_set)
+
+    def test_send_otlp_relation__defaults(self, ctx, snap_set, schema_check):
+        """Test send-otlp relation defaults protocol and secure mode."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp", remote_app_name="opentelemetry-collector", remote_app_data={"endpoint": "otel-collector:4318"}
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert any(delta.get("lp.otel-metrics.protocol") == "http" for delta in snap_set)
+        assert any(delta.get("lp.otel-metrics.insecure") == "True" for delta in snap_set)
+
+    def test_send_otlp_relation__insecure_false(self, ctx, snap_set, schema_check):
+        """Test send-otlp relation with insecure disabled."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp",
+            remote_app_name="opentelemetry-collector",
+            remote_app_data={"endpoint": "otel-collector:4318", "insecure": "false"},
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert any(delta.get("lp.otel-metrics.insecure") == "False" for delta in snap_set)
+
+    def test_send_otlp_relation__relation_removed(self, ctx, snap_set, schema_check):
+        """Test removing the send-otlp relation clears the OTLP metrics config."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp", remote_app_name="opentelemetry-collector", remote_app_data={"endpoint": "otel-collector:4318"}
+        )
+        state_in = _leader_state(relations=[standard, send_otlp])
+        ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+
+        send_otlp_removed = testing.Relation("send-otlp", remote_app_name="opentelemetry-collector")
+        state_removed = _leader_state(relations=[standard, send_otlp_removed])
+        ctx.run(ctx.on.relation_broken(send_otlp_removed), state_removed)
+        assert any(delta.get("lp.otel-metrics.otlp-endpoint") == "" for delta in snap_set)
+
+
+class TestLifecycle:
+    """Tests for install, start, and update-status events."""
+
+    def test_install(self, ctx):
+        """Test install event handler when snap needs ensure_revision."""
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.present = False
+            snap.revision = ""
+            snap.services = {"livepatch": {"active": False}}
+            snap.is_installed.return_value = False
+            snap.get.side_effect = lambda key, typed=False: {} if typed else ""
+            snap.set.return_value = None
+            snap.ensure.return_value = None
+            snap.hold.return_value = None
+            with patch("subprocess.check_output") as check_output:
+                check_output.return_value = ""
+                state_in = _leader_state()
+                state_out = ctx.run(ctx.on.install(), state_in)
+            assert snap.ensure.called
+            assert state_out.unit_status == testing.BlockedStatus("Waiting for postgres relation to be established.")
+
+    def test_install__already_installed(self, ctx, snap_set):
+        """Test install event handler when snap is present."""
+        with patch("subprocess.check_output") as check_output:
+            check_output.return_value = ""
+            state_in = _leader_state()
+            state_out = ctx.run(ctx.on.install(), state_in)
+        assert state_out.unit_status == testing.BlockedStatus("Waiting for postgres relation to be established.")
+
+    def test_update_status__running(self, ctx, snap_set, schema_check):
+        """Test update-status event handler when service is running."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+        ctx.run(ctx.on.config_changed(), state_in)
+        state_out = ctx.run(ctx.on.update_status(), _leader_state(relations=[standard]))
+        assert state_out.unit_status == testing.ActiveStatus(LIVEPATCH_RUNNING)
+
+    def test_update_status__not_running_after_being_active(self, ctx, snap_set, schema_check):
+        """Test update-status when service is not running after it was active."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+        ctx.run(ctx.on.config_changed(), state_in)
+
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.is_installed.return_value = True
+            snap.status.return_value = "enabled"
+            snap.version.return_value = "test-version"
+            snap.present = True
+            snap.revision = SERVER_SNAP_REVISION
+            snap.services = {"livepatch": {"active": False}}
+            snap.set.return_value = None
+            snap.restart.return_value = None
+            state_out = ctx.run(ctx.on.update_status(), _leader_state(relations=[standard]))
+        assert state_out.unit_status == testing.MaintenanceStatus(LIVEPATCH_NOT_RUNNING)
+
+    def test_update_status__not_running_after_not_being_active(self, ctx, snap_set, schema_check):
+        """Test update-status when service is not running and wasn't running before."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+        ctx.run(ctx.on.config_changed(), state_in)
+
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.is_installed.return_value = True
+            snap.status.return_value = "enabled"
+            snap.version.return_value = "test-version"
+            snap.present = True
+            snap.revision = SERVER_SNAP_REVISION
+            snap.services = {"livepatch": {"active": False}}
+            snap.set.return_value = None
+            snap.restart.return_value = None
+            state_out = ctx.run(ctx.on.update_status(), _leader_state(relations=[standard]))
+        assert state_out.unit_status == testing.MaintenanceStatus(LIVEPATCH_NOT_RUNNING)
+
+    def test_start(self, ctx, snap_set, schema_check):
+        """Test successfully running livepatch."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+        state_out = ctx.run(ctx.on.start(), state_in)
+        assert state_out.unit_status == testing.ActiveStatus(LIVEPATCH_RUNNING)
+
+
+class TestActions:
+    """Tests for charm actions."""
+
+    def test_enable_action__success(self, ctx, snap_set):
+        """Test enable action."""
+        state_in = _leader_state()
+        ctx.run(ctx.on.action("enable", params={"token": "some-token"}), state_in)
+        assert ctx.action_results == {"enabled": "true"}
+
+    def test_enable_action__empty_token(self, ctx, snap_set):
+        """Test enable action when provided token is empty."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="No token provided."):
+            ctx.run(ctx.on.action("enable", params={"token": ""}), state_in)
+
+    def test_enable_action__empty_retrieved_token(self, ctx, snap_set):
+        """Test enable action when provided token cannot be set."""
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.is_installed.return_value = True
+            snap.get.return_value = ""
+            state_in = _leader_state()
+            with pytest.raises(testing.ActionFailed, match="Failed to enable Ubuntu Pro"):
+                ctx.run(ctx.on.action("enable", params={"token": "some-token"}), state_in)
+
+    def test_enable_action__snap_not_installed(self, ctx, snap_set):
+        """Test enable action when livepatch snap is not installed."""
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.is_installed.return_value = False
+            snap.present = False
+            state_in = _leader_state()
+            with pytest.raises(testing.ActionFailed, match="Livepatch snap is not installed."):
+                ctx.run(ctx.on.action("enable", params={"token": "some-token"}), state_in)
+
+    def test_restart_action__success(self, ctx, snap_set):
+        """Test restart action."""
+        state_in = _leader_state()
+        ctx.run(ctx.on.action("restart"), state_in)
+        assert ctx.action_results == {"restarted": "true"}
+
+    def test_restart_action__failed_restart(self, ctx, snap_set):
+        """Test restart action when service is not running after restart."""
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.is_installed.return_value = True
+            snap.present = True
+            snap.revision = SERVER_SNAP_REVISION
+            snap.services = {"livepatch": {"active": False}}
+            snap.restart.return_value = None
+            state_in = _leader_state()
+            with pytest.raises(testing.ActionFailed, match="Server failed to restart."):
+                ctx.run(ctx.on.action("restart"), state_in)
+
+    def test_restart_action__snap_not_installed(self, ctx, snap_set):
+        """Test restart action when snap is not installed."""
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.is_installed.return_value = False
+            snap.present = False
+            state_in = _leader_state()
+            with pytest.raises(testing.ActionFailed, match="server snap is not installed"):
+                ctx.run(ctx.on.action("restart"), state_in)
+
+    def test_schema_upgrade_action__success(self, ctx, snap_set):
+        """Test schema-upgrade action."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+
+        def check_output_side_effect(cmd, *args, **kwargs):
             if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return check_schema_version_check_output
+                return "some-version"
             if cmd[0] == "canonical-livepatch-server.schema-tool":
                 return ""
             if cmd[0] == "leader-get":
                 return b""
-            raise AssertionError("unexpected call")
+            if cmd[0] == "update-ca-certificates":
+                return b"updated-ca-certs"
+            raise AssertionError(f"unexpected call: {cmd}")
 
-        subprocess_check_output_mock = Mock(side_effect=subprocess_check_output_side_effect)
-        schema_version_check_patch = patch("subprocess.check_output", subprocess_check_output_mock)
-        self.addCleanup(schema_version_check_patch.stop)
-        schema_version_check_patch.start()
+        with (
+            patch("subprocess.check_output", side_effect=check_output_side_effect),
+            patch("subprocess.run") as mock_run,
+            patch("subprocess.check_call") as check_call,
+        ):
+            mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+            check_call.return_value = 0
+            ctx.run(ctx.on.action("schema-upgrade"), state_in)
 
-        self.harness.enable_hooks()
+        assert ctx.action_results == {"schema-upgrade-required": False, "schema-version": "some-version"}
 
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
+    def test_schema_upgrade_action__failed(self, ctx, snap_set):
+        """Test schema-upgrade action failure."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
 
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        self.harness.update_config({"server.url-template": "some-url-template"})
-
-        self.assertEqual(
-            self.harness.model.unit.status.message, "Database not initialised, please run the schema-upgrade action."
-        )
-
-        check_schema_version_check_output = "some-version"  # From now on, the database is migrated
-
-        result = self.harness.run_action("schema-upgrade")
-
-        self.assertListEqual(
-            subprocess_check_output_mock.call_args.args[0],
-            ["canonical-livepatch-server.check-schema-version", self.harness.charm._state.db_uri],
-        )
-        self.assertEqual(
-            result.results,
-            {
-                "schema-upgrade-required": False,
-                "schema-version": "some-version",
-            },
-        )
-
-    def test_schema_upgrade_action__failed(self):
-        """test `schema-upgrade` action failure."""
-        self.snap_mock.present = True
-        self.snap_mock.services = {"livepatch": {"active": False}}
-        self.snap_mock.set.return_value = None
-        self.snap_mock.restart.return_value = None
-
-        check_schema_version_check_output = "Error: database not initialized"
-
-        def subprocess_check_output_side_effect(cmd: str, *args, **kwargs):
+        def check_output_side_effect(cmd, *args, **kwargs):
             if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return check_schema_version_check_output
+                return "some-version"
             if cmd[0] == "canonical-livepatch-server.schema-tool":
                 return ""
             if cmd[0] == "leader-get":
                 return b""
-            raise AssertionError("unexpected call")
+            if cmd[0] == "update-ca-certificates":
+                return b"updated-ca-certs"
+            raise AssertionError(f"unexpected call: {cmd}")
 
-        subprocess_check_output_mock = Mock(side_effect=subprocess_check_output_side_effect)
-        schema_version_check_patch = patch("subprocess.check_output", subprocess_check_output_mock)
-        self.addCleanup(schema_version_check_patch.stop)
-        schema_version_check_patch.start()
+        with (
+            patch("subprocess.check_output", side_effect=check_output_side_effect),
+            patch("subprocess.run") as mock_run,
+            patch("subprocess.check_call") as check_call,
+        ):
+            mock_run.return_value = Mock(returncode=1, stdout="out", stderr="err")
+            check_call.return_value = 0
+            with pytest.raises(testing.ActionFailed, match="Failed to run the schema upgrade command:"):
+                ctx.run(ctx.on.action("schema-upgrade"), state_in)
 
-        self.harness.enable_hooks()
+    def test_set_basic_users_action__success(self, ctx, snap_set):
+        """Test set-basic-users action."""
+        state_in = _leader_state()
+        ctx.run(ctx.on.action("set-basic-users", params={"users": "alice:foo,bob:bar"}), state_in)
+        assert "alice" in ctx.action_results["auth.basic.users"]
+        assert "bob" in ctx.action_results["auth.basic.users"]
 
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.set_leader(True)
+    def test_set_basic_users_action__repeated_user(self, ctx, snap_set):
+        """Test set-basic-users action when an existing user is re-added."""
+        state_in = _leader_state(config={"auth.basic.users": "alice:00000000,bob:00000000"})
+        with pytest.raises(testing.ActionFailed, match="The user alice already exists."):
+            ctx.run(ctx.on.action("set-basic-users", params={"users": "alice:baz", "append": True}), state_in)
 
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
+    def test_set_basic_users_action__long_password(self, ctx, snap_set):
+        """Test set-basic-users action when password is longer than allowed."""
+        state_in = _leader_state()
+        long_password = "a" * 73
+        with pytest.raises(testing.ActionFailed, match="cannot be more than 72 bytes"):
+            ctx.run(ctx.on.action("set-basic-users", params={"users": f"alice:{long_password}"}), state_in)
 
-        self.harness.update_config({"server.url-template": "some-url-template"})
+    def test_set_basic_users_action__empty_users(self, ctx, snap_set):
+        """Test set-basic-users action when users string is empty."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="No users provided"):
+            ctx.run(ctx.on.action("set-basic-users", params={"users": ""}), state_in)
 
-        self.assertEqual(
-            self.harness.model.unit.status.message, "Database not initialised, please run the schema-upgrade action."
-        )
 
-        check_schema_version_check_output = "Error: database not initialized"
+class TestCustomCA:
+    """Tests for custom CA configuration."""
 
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("schema-upgrade")
-
-        self.assertListEqual(
-            subprocess_check_output_mock.call_args.args[0],
-            ["canonical-livepatch-server.check-schema-version", self.harness.charm._state.db_uri],
-        )
-        self.assertEqual(ex.exception.message, "Schema upgrade failed.")
-
-    def test_set_basic_users_action__success(self):
-        """test `set-basic-users` action."""
-        self.start_leader_unit()
-
-        self.snap_mock.set = Mock(return_value=None)
-
-        def mock_restart(service: List[str]):
-            self.assertEqual(service, ["livepatch"])
-            self.snap_mock.services = {"livepatch": {"active": True}}
-
-        self.snap_mock.restart = Mock(side_effect=mock_restart)
-
-        result = self.harness.run_action(
-            "set-basic-users",
-            {
-                "users": "alice:foo,bob:bar",
-            },
-        )
-
-        def mock_get(key: str):
-            self.assertEqual(key, "lp.auth.basic.users")
-            return "alice:00000000,bob:00000000"
-
-        self.snap_mock.get = Mock(side_effect=mock_get)
-
-        result_append = self.harness.run_action(
-            "set-basic-users",
-            {
-                "append": True,
-                "users": "charlie:baz",
-            },
-        )
-
-        self.assertEqual(self.snap_mock.set.call_args_list[0].args[0]["lp.auth.basic.enabled"], True)
-        self.assertRegex(self.snap_mock.set.call_args_list[0].args[0]["lp.auth.basic.users"], "^alice:.*,bob:.*$")
-        self.assertEqual(
-            result.results,
-            {"users-set": ["alice", "bob"]},
-        )
-
-        self.assertEqual(self.snap_mock.set.call_args_list[1].args[0]["lp.auth.basic.enabled"], True)
-        self.assertRegex(
-            self.snap_mock.set.call_args_list[1].args[0]["lp.auth.basic.users"], "^alice:.*,bob:.*,charlie:.*$"
-        )
-        self.assertEqual(
-            result_append.results,
-            {"users-set": ["charlie"]},
-        )
-
-    def test_set_basic_users_action__repeated_user(self):
-        """test `set-basic-users` action when an existing user is re-added."""
-        self.start_leader_unit()
-
-        self.snap_mock.set = Mock(return_value=None)
-
-        def mock_restart(service: List[str]):
-            self.assertEqual(service, ["livepatch"])
-            self.snap_mock.services = {"livepatch": {"active": True}}
-
-        self.snap_mock.restart = Mock(side_effect=mock_restart)
-
-        result = self.harness.run_action(
-            "set-basic-users",
-            {
-                "users": "alice:foo,bob:bar",
-            },
-        )
-
-        self.assertEqual(
-            result.results,
-            {"users-set": ["alice", "bob"]},
-        )
-
-        def mock_get(key: str):
-            self.assertEqual(key, "lp.auth.basic.users")
-            return "alice:00000000,bob:00000000"
-
-        self.snap_mock.get = Mock(side_effect=mock_get)
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action(
-                "set-basic-users",
-                {
-                    "append": True,
-                    "users": "alice:baz",
-                },
-            )
-
-        self.assertEqual(ex.exception.message, "The user alice already exists.")
-
-    def test_set_basic_users_action__long_password(self):
-        """test `set-basic-users` action when password is longer than allowed."""
-        self.start_leader_unit()
-
-        self.snap_mock.set = Mock(return_value=None)
-
-        def mock_restart(service: List[str]):
-            self.assertEqual(service, ["livepatch"])
-            self.snap_mock.services = {"livepatch": {"active": True}}
-
-        self.snap_mock.restart = Mock(side_effect=mock_restart)
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action(
-                "set-basic-users",
-                {
-                    "users": "alice:password-with-73-chars-00000000000000000000000000000000000000000000000000",
-                },
-            )
-
-        self.assertRegex(ex.exception.message, "Password: .* cannot be more than 72 characters\\.")
-
-    def test_set_basic_users_action__invalid_arg(self):
-        """test `set-basic-users` action when argument is not valid."""
-        self.start_leader_unit()
-        with self.subTest("users: none"):
-            with self.assertRaises(ActionFailed) as ex:
-                self.harness.run_action("set-basic-users", {"users": None})
-
-            self.assertEqual(
-                ex.exception.message, "No users provided to be set. Please provide users as: users=user:pass,user:pass"
-            )
-
-        with self.subTest("users: empty"):
-            with self.assertRaises(ActionFailed) as ex:
-                self.harness.run_action("set-basic-users", {"users": ""})
-
-            self.assertEqual(
-                ex.exception.message, "No users provided to be set. Please provide users as: users=user:pass,user:pass"
-            )
-
-        with self.subTest("users: non-string"):
-            with self.assertRaises(ActionFailed) as ex:
-                self.harness.run_action("set-basic-users", {"users": ["foo"]})
-
-            self.assertEqual(
-                ex.exception.message, "Failed to parse users list. Please provide users as: users=user:pass,user:pass"
-            )
-
-    def test_custom_ca(self):
-        """test setting a custom CA for the contracts server"""
-        self.start_leader_unit()
+    def test_custom_ca(self, ctx, snap_set, schema_check):
+        """Test setting a custom CA for the contracts server."""
+        standard = _standard_db_relation()
         with tempfile.NamedTemporaryFile() as tmpfile:
-            with patch.object(src.charm, "TRUSTED_CA_FILENAME", tmpfile.name):
-                self.harness.update_config({"contracts.ca": "dGVzdA=="})
-            self.assertTrue(os.path.exists(tmpfile.name))
-            self.assertEqual(tmpfile.read().decode(), "test")
+            with patch("reconciler.TRUSTED_CA_FILENAME", tmpfile.name):
+                state_in = _leader_state(relations=[standard], config={"contracts.ca": "dGVzdA=="})
+                ctx.run(ctx.on.config_changed(), state_in)
+            assert os.path.exists(tmpfile.name)
+            assert tmpfile.read().decode() == "test"
