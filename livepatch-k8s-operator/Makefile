@@ -1,10 +1,17 @@
 # Copyright 2024 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-.PHONY: microk8s-push operator-prod-k8s deploy-onprem-k8s
+ROOT := $(CURDIR)/..
+
+.PHONY: sync microk8s-push operator-prod-k8s deploy-onprem-k8s
+
+# Stage the shared modules and dashboards into this charm tree. Delegates to the
+# root Makefile so there is a single source of truth for the copy logic.
+sync:
+	$(MAKE) -C $(ROOT) sync
 
 # Builds the prod operator charm, can be used with hosted or onprem images
-operator-prod-k8s:
+operator-prod-k8s: sync
 	rm -f *.charm
 	charmcraft pack
 

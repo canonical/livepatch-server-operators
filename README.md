@@ -78,8 +78,13 @@ make opcli-build
 make pack
 ```
 
-Both targets run `make sync` automatically. To pack one charm, run `make sync`
-first, then run `charmcraft pack` inside its directory. The artifacts are:
+Both targets run `make sync` automatically. Every Make target that packs or
+tests a charm now runs `make sync` first — including the per-charm targets
+(`make operator-prod-k8s` for Kubernetes, `make build-machine-charm`,
+`make unit-test`, and `make integration-test` for machine) — so the staged
+copies can't go stale. You only need to run `make sync` by hand if you invoke
+`charmcraft pack` or `tox` directly instead of through a Make target. The
+artifacts are:
 
 - `livepatch-k8s-operator/canonical-livepatch-server-k8s_amd64.charm`
 - `livepatch-machine-operator/canonical-livepatch-server_ubuntu-22.04-amd64.charm`
