@@ -57,9 +57,12 @@ _KV_PATTERN = re.compile(
     r")\b)"
     r"(?P<sep>\s*[=:]\s*)"
     r"(?:"
-    r"(?P<q>['\"])(?P<qv>.*?)(?P=q)"
+    # Backslash-escaped characters (including the quote itself) are consumed
+    # as part of the value so an escaped quote cannot end the match early.
+    r"(?P<q>['\"])(?P<qv>(?:\\.|(?!(?P=q))[^\\])*)(?P=q)"
     r"|"
-    r"(?P<uv>[^\s'\"]+)"
+    # An unterminated opening quote must not stop the unquoted value matching.
+    r"['\"]?(?P<uv>[^\s'\"]+)"
     r")",
     re.IGNORECASE,
 )
@@ -252,15 +255,16 @@ def setup_log_redaction() -> None:
     ``super().__init__()`` inside the charm's ``__init__`` method.
 
     Effects:
-    - A ``RedactingFilter`` is registered on the root logger, redacting every
-      record in-place before any handler renders it — including handlers that
-      were added after this call or attached to a non-root logger.
+    - A ``RedactingFilter`` is registered on the root logger, redacting records
+      logged directly on it. Logger filters are not applied to records
+      propagated from child loggers, so this alone does not cover them.
     - Each existing handler on the root logger has its formatter wrapped with
       ``RedactingFormatter`` as a safety net.
     - A redacting :func:`logging.getLogRecordFactory` is installed so every
-      subsequent :class:`logging.LogRecord` (including those emitted by child
-      loggers that do not propagate through the root filter) has its rendered
-      message, exception and stack redacted.
+      subsequent :class:`logging.LogRecord` has its rendered message,
+      exception and stack redacted at creation. This is what covers records
+      from child loggers, including those with their own handlers or with
+      ``propagate=False``.
     """
     root = logging.getLogger()
 

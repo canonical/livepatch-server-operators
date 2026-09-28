@@ -3,6 +3,8 @@
 
 from base64 import b64encode
 
+import pytest
+
 from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME, decode_contracts_ca
 
 
@@ -20,6 +22,18 @@ def test_decode_contracts_ca_valid():
     pem, invalid = decode_contracts_ca(b64encode(cert.encode()).decode())
     assert pem == cert
     assert invalid is False
+
+
+def test_decode_contracts_ca_accepts_line_wrapped_base64():
+    cert = "-----BEGIN CERTIFICATE-----\n" + "A" * 120 + "\n-----END CERTIFICATE-----\n"
+    encoded = b64encode(cert.encode()).decode()
+    wrapped = "\n".join(encoded[i : i + 76] for i in range(0, len(encoded), 76))
+    assert decode_contracts_ca(wrapped) == (cert, False)
+
+
+@pytest.mark.parametrize("value", ["!!!!", "not-base64!!!", "QUJD!", "QUJ"])
+def test_decode_contracts_ca_rejects_non_alphabet_or_bad_padding(value):
+    assert decode_contracts_ca(value) == (None, True)
 
 
 def test_decode_contracts_ca_malformed():

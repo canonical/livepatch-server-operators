@@ -3,8 +3,6 @@
 
 """Thin k8s-facing wrapper over the shared legacy-config migration map."""
 
-from typing import Any, Dict, List
-
 import yaml
 
 from livepatch_common.config_migration import migrate_config
