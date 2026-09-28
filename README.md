@@ -1,6 +1,9 @@
 # livepatch-server-operators
 
 Monorepo for the [Livepatch Server](https://ubuntu.com/security/livepatch)
+
+See `AGENTS.md` for concise guidance for AI coding and review agents.
+
 ## Building the charms
 ### 1. Stage the shared sources
 
@@ -12,12 +15,19 @@ make sync
 ```
 
 This copies `shared/livepatch_common/` into both charms' `src/` directories and
-the shared dashboards into both charms' dashboard directories. Run it again
-after any change to `shared/`.
+the shared dashboards into both charms' dashboard directories. These staged
+copies are generated; edit `shared/` and run `make sync` again after any change
+there.
 
 ### 2. Build the charms
 
-Build both charms:
+Build both charms with `opcli`:
+
+```sh
+make opcli-build
+```
+
+Or build both charms with charmcraft directly:
 
 ```sh
 make pack
@@ -45,18 +55,20 @@ juju deploy ./livepatch-machine-operator/canonical-livepatch-server_*.charm
 
 ## Running tests
 
+Run `make sync` before running the per-charm tox environments.
+
 ```sh
 # shared/livepatch_common unit tests
 tox -e shared
+
+# config-option parity between the two charms
+tox -e config-parity
 
 # machine charm unit tests
 cd livepatch-machine-operator && tox -e unit
 
 # k8s charm unit tests
 cd livepatch-k8s-operator && tox -e unit
-
-# config-option parity between the two charms
-tox -e config-parity
 ```
 
 The `*.charm` files and the `.tox` environments are gitignored.
@@ -65,4 +77,4 @@ The `*.charm` files and the `.tox` environments are gitignored.
 
 1. Edit the files under `shared/livepatch_common/` (and `shared/grafana_dashboards/` if needed).
 2. Run `make sync` to restage them into both charm trees.
-3. `make pack` to rebuild, or run the `tox` environments above to test.
+3. `make opcli-build` or `make pack` to rebuild, or run the `tox` environments above to test.

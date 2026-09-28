@@ -2,7 +2,13 @@
 # See LICENSE file for licensing details.
 
 import argparse
+import sys
+from pathlib import Path
+
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 from livepatch_common.config_migration import migrate_config
 
 

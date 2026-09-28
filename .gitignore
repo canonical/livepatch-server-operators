@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .tox/
 .venv/
+livepatch-k8s-operator/src/livepatch_common/
+livepatch-machine-operator/src/livepatch_common/
+livepatch-k8s-operator/cos_custom/
+livepatch-machine-operator/src/grafana_dashboards/
+artifacts.build.yaml
