@@ -1,8 +1,17 @@
-# Copyright 2024 Canonical Ltd.
+# Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
 # Learn more about charmcraft.yaml configuration at:
 # https://juju.is/docs/sdk/charmcraft-config
+#
+# This charm uses the `go-framework` extension (12-factor charm library). The
+# extension requires `config`, `actions`, `peers`, `provides` and `requires`
+# to live in this single file rather than separate metadata.yaml/config.yaml/
+# actions.yaml files.
+#
+# NOTE: the go-framework extension is EXPERIMENTAL as of charmcraft 4.3.1.
+# `charmcraft pack` / `expand-extensions` require:
+#   CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=1
 type: "charm"
 name: canonical-livepatch-server-k8s
 summary: Canonical Livepatch Server
@@ -10,19 +19,969 @@ description: |
   The purpose of the Livepatch Server is to pull in patch updates from
   Canonical and allow more fine-grained control of patch rollout to the
   machines running on your infrastructure.
-base: ubuntu@22.04
+base: ubuntu@24.04
 platforms:
   amd64:
-parts:
-  charm:
-    build-packages: [git, gawk]
-    charm-python-packages: 
-    - setuptools==78.1.1
-    - pip==23.2.1
-    charm-binary-python-packages:
-    - cosl==1.4.0
-    - ops==3.5.0
-    - ops-lib-pgsql==1.4
-    - requests==2.32.5
-    - responses==0.25.8
-    - urllib3==2.6.3
+
+extensions:
+  - go-framework
+
+requires:
+  # Main state database. Replaces the old `database` (postgresql_client)
+  # relation name; the interface is unchanged so postgresql-k8s still works.
+  postgresql:
+    interface: postgresql_client
+    optional: false
+    limit: 1
+  # Deprecated legacy postgresql relation (pgsql interface), re-added for
+  # backward compatibility. Only one of `postgresql`/`database-legacy` may be
+  # related at a time (enforced in src/charm.py, matching the pre-12-factor
+  # charm's behaviour).
+  database-legacy:
+    interface: pgsql
+    optional: true
+    limit: 1
+  # Second, optional PostgreSQL/TimescaleDB database for time-series metrics.
+  # NOT one of the go-framework predefined integrations (which only support a
+  # single relation per db interface), so it is wired up manually in
+  # src/charm.py using paas_charm.databases.PaaSDatabaseRequires directly.
+  metrics-db:
+    interface: postgresql_client
+    optional: true
+    limit: 1
+  # Legacy nginx-ingress-integrator support, re-added for backward
+  # compatibility alongside go-framework's own `ingress` (traefik) requires.
+  # Selected via the `ingress-interface` config option.
+  nginx-route:
+    interface: nginx-route
+    optional: true
+    limit: 1
+  cve-catalog:
+    interface: cve-catalog
+    optional: true
+    limit: 1
+  pro-airgapped-server:
+    interface: livepatch-pro-airgapped-server
+    optional: true
+    limit: 1
+  # OTLP metrics (remote-write style), distinct from go-framework's built-in
+  # `tracing` integration (OTLP traces only). Custom wiring in src/charm.py.
+  send-otlp:
+    interface: otlp
+    optional: true
+    limit: 1
+  # go-framework's predefined tracing integration (OTLP traces). The
+  # generated OTEL_EXPORTER_OTLP_ENDPOINT/OTEL_SERVICE_NAME env vars are
+  # remapped to LP_TRACING_* in LivepatchApp.gen_environment().
+  tracing:
+    interface: tracing
+    optional: true
+    limit: 1
+
+actions:
+  schema-upgrade:
+    description: Upgrade the application database schema.
+
+  schema-version:
+    description: Print the current schema version to the logs.
+
+  restart:
+    description: Restart livepatch service.
+
+  get-resource-token:
+    description: |
+      Get resource token from ua-contracts based on the contract token.
+
+      Provide `contract-token-secret` (preferred): the URI of a Juju secret containing
+      a `value` key with the contract token, e.g.:
+        juju add-secret livepatch-contract-token value=<contract-token>
+        juju grant-secret livepatch-contract-token canonical-livepatch-server-k8s
+        juju run canonical-livepatch-server-k8s/leader get-resource-token contract-token-secret=<secret-uri>
+
+      Alternatively (deprecated: stored in plaintext in Juju's action history, visible
+      via `juju show-task`/`juju show-operation`), provide `contract-token` directly.
+    params:
+      contract-token:
+        type: string
+        default: ""
+      contract-token-secret:
+        type: string
+        default: ""
+
+  emit-updated-config:
+    description: Generate new yaml config based on old reactive charm config.
+    params:
+      config-file:
+        type: string
+    required: ["config-file"]
+
+config:
+  options:
+    ##########
+    # Extras #
+    ##########
+    ingress-interface:
+      default: "legacy-nginx-route"
+      description: |
+        Select the ingress integration. Defaults to "legacy-nginx-route" for
+        backward compatibility. Use "ingress" for new deployments.
+      type: string
+    server.log-level:
+      default: info
+      description: The servers log level.
+      type: string
+    server.url-template:
+      description: |
+        Template string to use when making URLs for giving back to the client.
+
+        e.g. https://livepatch-hosting.com/v1/patches/{filename}
+
+        This will need to be configured once the url or ip address of the service
+        is known.
+      type: string
+    server.concurrency-limit:
+      default: 1000
+      description: Maximum number of API requests being served concurrently.
+      type: int
+    server.burst-limit:
+      default: 500
+      description: |
+        The maximum number of concurrently incoming requests.
+
+        After this limit, requests are queued according to the following:
+        concurrency-limit - burst_limit
+
+        For defaults, this is:
+        1000 - 500 = 500 (Maximum queue).
+
+        Once the queue is reached, subsequent requests are rejected.
+      type: int
+    server.is-hosted:
+      default: False
+      description: |
+        Defines whether the server will act as an on-prem server
+        (i.e. fetching patches from the hosted server), or will act as a
+        hosted server.
+      type: boolean
+    server.redirect-downloads:
+      default: False
+      description: |
+        When true, the server will redirect downloads directed at its /v1/patches/{filename}
+        endpoint to the endpoint defined in the server.url-template config option. This is
+        useful if you want patch downloads to be redirected to a fileserver fronting patches.
+        Note: Do not enable this option if the server.url-template is configured as the
+        Livepatch-server as this will result in a redirect loop.
+      type: boolean
+
+    auth.basic.enabled:
+      default: false
+      description: |
+        Whether basic auth should be used.
+      type: boolean
+    auth.basic.users:
+      description: |
+        A comma separated list of "user:password-hash" pairs used for authentication.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        auth.basic.users-secret to a Juju secret URI instead.
+      type: string
+    auth.basic.users-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to auth.basic.users: takes priority over
+        it when both are set. Must be set to the URI of a Juju secret containing a `value`
+        key with the comma separated "user:password-hash" pairs, e.g.:
+          juju add-secret livepatch-basic-users value="user:hash"
+          juju grant-secret livepatch-basic-users canonical-livepatch-server-k8s
+          juju config canonical-livepatch-server-k8s auth.basic.users-secret=<secret-uri>
+      type: secret
+    auth.oauth.enabled:
+      default: false
+      description: |
+        Whether OAuth 2.0 bearer token authentication backed by Canonical IdP should be enabled for admin API access.
+      type: boolean
+    auth.oauth.audience:
+      description: |
+        Expected JWT audience claim value for OAuth authentication.
+      type: string
+    auth.oauth.issuer:
+      description: |
+        Expected JWT issuer claim value for OAuth authentication.
+      type: string
+    auth.oauth.sig-algs:
+      default: "RS256"
+      description: |
+        Comma separated list of accepted JWT signature algorithms.
+        Supported values: RS256, RS384, RS512, ES256, ES384, ES512.
+      type: string
+    auth.oauth.allowed-cidp-groups:
+      description: |
+        Comma separated list of CIdP group names allowed to access the admin API when OAuth is enabled.
+      type: string
+    auth.oauth.jwks.url:
+      description: |
+        URL of the JWKS endpoint used to fetch signing keys for JWT verification.
+      type: string
+    auth.oauth.jwks.refresh-interval:
+      default: "1h"
+      description: |
+        Interval for refreshing the JWKS key set.
+      type: string
+    auth.oauth.jwks.refresh-unknown-kid:
+      default: true
+      description: |
+        Refresh JWKS on-demand when a token contains an unknown key ID (kid).
+      type: boolean
+    auth.oauth.jwks.refresh-unknown-kid-limit:
+      default: "10m"
+      description: |
+        Minimum interval between on-demand JWKS refresh attempts for unknown key IDs.
+      type: string
+    auth.oauth.jwks.refresh-unknown-kid-max-wait:
+      default: "1m"
+      description: |
+        Maximum time to wait for an in-flight on-demand JWKS refresh.
+      type: string
+    auth.oauth.proxy.enabled:
+      default: false
+      description: Whether or not to use proxy for requests to OAuth provider.
+      type: boolean
+    auth.oauth.proxy.http:
+      default: ""
+      description: A comma separated list of HTTP proxies to query the OAuth provider.
+      type: string
+    auth.oauth.proxy.https:
+      default: ""
+      description: A comma separated list of HTTPS proxies to query the OAuth provider.
+      type: string
+    auth.oauth.proxy.no-proxy:
+      default: ""
+      description: A comma separated list of domains, IP CIDRs and/or ports to block when querying the OAuth provider.
+      type: string
+
+    contracts.enabled:
+      description: Whether use of the contracts service is enabled.
+      type: boolean
+    contracts.url:
+      default: "https://contracts.canonical.com"
+      description: URL to hit for the contracts service
+      type: string
+    contracts.user:
+      description: |
+        Username to authenticate with backend contracts service.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        the `user` key of contracts.credentials-secret to a Juju secret instead.
+      type: string
+    contracts.password:
+      description: |
+        Password to authenticate with backend contracts service.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        the `password` key of contracts.credentials-secret to a Juju secret instead.
+      type: string
+    contracts.ca:
+      description: |
+        A certificate of the CA that issued the certificate of the contracts service.
+        Use 'include-base64://' in a bundle to include a certificate. Otherwise,
+        pass a base64-encoded certificate (base64 of "-----BEGIN" to "-----END")
+        as a config option in a Juju CLI invocation.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        the `ca` key of contracts.credentials-secret to a Juju secret instead.
+      type: string
+      default: ""
+    contracts.credentials-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to contracts.user/contracts.password/
+        contracts.ca: any key set here takes priority over its plain-text counterpart above.
+
+        Must be set to the URI of a Juju secret with (as applicable) `user`, `password`
+        and `ca` keys, e.g.:
+          juju add-secret livepatch-contracts-credentials user=<user> password=<password>
+          juju grant-secret livepatch-contracts-credentials canonical-livepatch-server-k8s
+          juju config canonical-livepatch-server-k8s contracts.credentials-secret=<secret-uri>
+
+        `ca` is a base64-encoded certificate of the CA that issued the certificate of the
+        contracts service (base64 of "-----BEGIN" to "-----END").
+      type: secret
+
+    contracts.timeout:
+      default: "5s"
+      description: Timeout for requests to the contracts service.
+      type: string
+
+    database.connection-pool-max:
+      default: 10
+      description: The maximum pool of connections to PostgreSQL.
+      type: int
+    database.connection-lifetime-max:
+      default: 10m
+      description: The lifespan of an idle PostgreSQL connection.
+      type: string
+    database.work_mem:
+      description: |
+        The PostgreSQL work_mem parameter for connections with the database.
+        The value is specified as an integer number of MegaBytes (MB), matching the
+        unit semantics of PostgreSQL's work_mem setting.
+        This option is optional: when left unset, the charm does not override
+        PostgreSQL's work_mem, and the server's own default value is used.
+      type: int
+
+    timescale_db.enabled:
+      default: false
+      description: Whether or not to enable TimescaleDB for time series data storage.
+      type: boolean
+    timescale_db.connection_pool_max:
+      default: 10
+      description: The maximum pool of connections to TimescaleDB.
+      type: int
+    timescale_db.connection_lifetime_max:
+      default: 10m
+      description: The lifespan of an idle TimescaleDB connection.
+      type: string
+    timescale_db.work_mem:
+      description: |
+        The PostgreSQL work_mem parameter for connections with TimescaleDB.
+      default: 16
+      type: int
+    timescale_db.flush_timeout:
+      default: 1m
+      description: |
+        The maximum time to wait for a flush to complete when flushing time series data to TimescaleDB.
+      type: string
+
+    patch-storage.type:
+      default: filesystem
+      description: |
+        The storage backend type for patches. Available options are:
+          - filesystem
+          - swift
+          - postgres
+          - s3
+          - gcs
+          - azure
+          - ibm
+          - oracle
+
+        When using "postgres" for storage, the charm uses the database relation
+        automatically with the default database name "livepatch". A custom
+        database may be specified via patch-storage.postgres-connection-string
+        but must be created manually.
+
+        When using "filesystem", patches are stored at the path configured in
+        patch-storage.filesystem-path.
+      type: string
+    patch-storage.filesystem-path:
+      default: "/var/lib/livepatch/patches"
+      description: The filesystem path to store patches.
+      type: string
+    patch-storage.swift-username:
+      default: ""
+      description: The Swift username to login against when using API key authorisation.
+      type: string
+    patch-storage.swift-api-key:
+      default: ""
+      description: |
+        An authorisation API key for swift.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        patch-storage.swift-api-key-secret to a Juju secret URI instead.
+      type: string
+    patch-storage.swift-api-key-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to patch-storage.swift-api-key: takes
+        priority over it when both are set. Must be set to the URI of a Juju secret
+        containing a `value` key with the API key.
+      type: secret
+    patch-storage.swift-auth-url:
+      default: ""
+      description: The authorisation URL for swift.
+      type: string
+    patch-storage.swift-domain:
+      default: ""
+      description: The domain the containers reside under in swift for storing patches.
+      type: string
+    patch-storage.swift-tenant:
+      default: ""
+      description: The tenant account name for your container and API service user to connect under.
+      type: string
+    patch-storage.swift-container:
+      default: ""
+      description: The swift blob storage location for storing patches.
+      type: string
+    patch-storage.swift-region:
+      default: ""
+      description: The region assigned to this domain and tenant.
+      type: string
+    patch-storage.postgres-connection-string:
+      description: |
+        A connection string URI to a PostgreSQL database for patch storage.
+
+        When set to an empty string, it is handled by relation and uses the same
+        database cluster that livepatch server uses for state. The database name is 'livepatch'.
+
+        If this is to be changed, it is expected that the database you wish to connect to is
+        created manually.
+      type: string
+    patch-storage.s3-bucket:
+      default: ""
+      description: The S3 bucket to store patches within.
+      type: string
+    patch-storage.s3-endpoint:
+      default: ""
+      description: The S3 API presigned endpoint.
+      type: string
+    patch-storage.s3-region:
+      default: ""
+      description: The AWS region for this S3 storage.
+      type: string
+    patch-storage.s3-secure:
+      default: false
+      description: Whether or not to perform TLS.
+      type: boolean
+    patch-storage.s3-access-key:
+      default: ""
+      description: |
+        AWS programmatic API access key. Must be set together with patch-storage.s3-secret-key.
+        When both are omitted, the AWS SDK's default credential chain is used instead. Note that
+        this workload runs in a pod, not a VM, so ambient credentials (e.g. an EC2 instance role)
+        are not available unless IAM Roles for Service Accounts (IRSA) has been configured
+        separately for the workload's service account; otherwise, these keys must be set.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting the
+        `access-key` key of patch-storage.s3-credentials-secret to a Juju secret instead.
+      type: string
+    patch-storage.s3-secret-key:
+      default: ""
+      description: |
+        AWS programmatic API secret key, used together with patch-storage.s3-access-key.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting the
+        `secret-key` key of patch-storage.s3-credentials-secret to a Juju secret instead.
+      type: string
+    patch-storage.s3-credentials-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to patch-storage.s3-access-key/
+        patch-storage.s3-secret-key: any key set here takes priority over its plain-text
+        counterpart above. When both this and the plain-text options are omitted, the AWS
+        SDK's default credential chain is used instead. Note that this workload runs in a
+        pod, not a VM, so ambient credentials (e.g. an EC2 instance role) are not available
+        unless IAM Roles for Service Accounts (IRSA) has been configured separately for the
+        workload's service account; otherwise, this must be set.
+
+        Must be set to the URI of a Juju secret with `access-key` and `secret-key` keys.
+      type: secret
+    patch-storage.s3-use-path-style:
+      default: false
+      description: |
+        Whether to use path-style S3 URLs (https://s3.amazonaws.com/BUCKET/KEY) instead of
+        virtual-hosted-style URLs (https://BUCKET.s3.amazonaws.com/KEY). Required for some
+        S3-compatible services (e.g. MinIO), and not needed for AWS S3.
+      type: boolean
+    patch-storage.s3-assume-role-arn:
+      default: ""
+      description: |
+        An optional IAM role ARN to assume via STS. When set, the resolved AWS credentials
+        are used to assume this role via STS instead of being used directly.
+      type: string
+    patch-storage.gcs-bucket:
+      default: ""
+      description: The Google Cloud Storage bucket to store patches within.
+      type: string
+    patch-storage.gcs-credentials-file:
+      default: ""
+      description: |
+        Path to a Google Cloud service account credentials JSON file. When omitted (along with
+        patch-storage.gcs-credentials-json), Application Default Credentials are used instead.
+        Note that this workload runs in a pod, not a VM, so ambient credentials (e.g. the GCE
+        metadata service) are not available unless GKE Workload Identity has been configured
+        separately for the workload's service account; otherwise, credentials must be set.
+      type: string
+    patch-storage.gcs-credentials-json:
+      default: ""
+      description: |
+        Google Cloud service account credentials, as a JSON string. When omitted (along with
+        patch-storage.gcs-credentials-file), Application Default Credentials are used instead.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        patch-storage.gcs-credentials-json-secret to a Juju secret URI instead.
+      type: string
+    patch-storage.gcs-credentials-json-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to patch-storage.gcs-credentials-json: takes
+        priority over it when both are set. Must be set to the URI of a Juju secret containing
+        a `value` key with the JSON credentials.
+      type: secret
+    patch-storage.gcs-impersonate-service-account:
+      default: ""
+      description: |
+        An optional service account email to impersonate. When set, the resolved credentials
+        are used to impersonate this service account instead of being used directly.
+      type: string
+    patch-storage.azure-container:
+      default: ""
+      description: The Azure Blob Storage container to store patches within.
+      type: string
+    patch-storage.azure-account-name:
+      default: ""
+      description: |
+        The Azure Storage account name. Required unless the `connection-string` key of
+        patch-storage.azure-credentials-secret is set, which already carries the account name and key.
+      type: string
+    patch-storage.azure-account-key:
+      default: ""
+      description: |
+        The Azure Storage account key, used together with patch-storage.azure-account-name for
+        shared key authentication.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting the
+        `account-key` key of patch-storage.azure-credentials-secret to a Juju secret instead.
+      type: string
+    patch-storage.azure-connection-string:
+      default: ""
+      description: |
+        An Azure Storage connection string. When set, this is used instead of
+        patch-storage.azure-account-name/patch-storage.azure-account-key for authentication.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting the
+        `connection-string` key of patch-storage.azure-credentials-secret to a Juju secret instead.
+      type: string
+    patch-storage.azure-credentials-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to patch-storage.azure-account-key/
+        patch-storage.azure-connection-string/patch-storage.azure-client-secret: any key set
+        here takes priority over its plain-text counterpart above.
+
+        Must be set to the URI of a Juju secret with (as applicable) the following keys:
+          - `account-key`: shared key authentication, used with patch-storage.azure-account-name.
+          - `connection-string`: used instead of patch-storage.azure-account-name/`account-key`.
+          - `client-secret`: the Entra ID (Azure AD) service principal's client secret.
+      type: secret
+    patch-storage.azure-tenant-id:
+      default: ""
+      description: |
+        The Entra ID (Azure AD) tenant ID, used together with patch-storage.azure-client-id and
+        the `client-secret` key of patch-storage.azure-credentials-secret for service principal
+        authentication.
+      type: string
+    patch-storage.azure-client-id:
+      default: ""
+      description: The Entra ID (Azure AD) service principal's client ID.
+      type: string
+    patch-storage.azure-client-secret:
+      default: ""
+      description: |
+        The Entra ID (Azure AD) service principal's client secret.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting the
+        `client-secret` key of patch-storage.azure-credentials-secret to a Juju secret instead.
+      type: string
+    patch-storage.azure-managed-identity-client-id:
+      default: ""
+      description: |
+        When patch-storage.azure-account-name, the `connection-string` key of
+        patch-storage.azure-credentials-secret, and the service principal fields are all omitted,
+        a managed identity is used instead. Note that this workload runs in a pod, not a VM,
+        so a VM-bound managed identity is not available unless Entra Workload ID federation
+        has been configured separately for the workload's service account; this option then
+        selects the user-assigned identity's client ID to use.
+      type: string
+    patch-storage.ibm-bucket:
+      default: ""
+      description: The IBM Cloud Object Storage bucket to store patches within.
+      type: string
+    patch-storage.ibm-endpoint:
+      default: ""
+      description: The IBM Cloud Object Storage API endpoint.
+      type: string
+    patch-storage.ibm-region:
+      default: ""
+      description: The IBM Cloud region for this Object Storage instance.
+      type: string
+    patch-storage.ibm-api-key:
+      default: ""
+      description: |
+        IAM API key. Must be set together with patch-storage.ibm-service-instance-id.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        patch-storage.ibm-api-key-secret to a Juju secret URI instead.
+      type: string
+    patch-storage.ibm-api-key-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to patch-storage.ibm-api-key: takes
+        priority over it when both are set. Must be set to the URI of a Juju secret
+        containing a `value` key with the API key.
+      type: secret
+    patch-storage.ibm-service-instance-id:
+      default: ""
+      description: IBM Cloud service instance ID, used together with patch-storage.ibm-api-key.
+      type: string
+    patch-storage.ibm-trusted-profile-id:
+      default: ""
+      description: |
+        When an IAM API key is not configured, the ambient VPC Instance Metadata Service is
+        used instead. Note that this workload runs in a pod, not a VM, so this ambient service
+        is not available unless a Trusted Profile bound to the underlying compute resource
+        has been configured separately; this option then selects which profile to assume.
+      type: string
+    patch-storage.oracle-bucket:
+      default: ""
+      description: The Oracle Cloud Infrastructure Object Storage bucket to store patches within.
+      type: string
+    patch-storage.oracle-namespace:
+      default: ""
+      description: The Oracle Cloud Infrastructure Object Storage namespace.
+      type: string
+    patch-storage.oracle-region:
+      default: ""
+      description: The Oracle Cloud Infrastructure region for this Object Storage instance.
+      type: string
+    patch-storage.oracle-config-file:
+      default: ""
+      description: |
+        Path to an OCI config file for authentication. When omitted (along with
+        patch-storage.oracle-profile), instance principal authentication is used instead,
+        bound to the OCI compute instance the server runs on.
+      type: string
+    patch-storage.oracle-profile:
+      default: ""
+      description: The profile name to use from the OCI config file.
+      type: string
+    patch-cache.enabled:
+      default: false
+      description: Whether or not to cache patches.
+      type: boolean
+    patch-cache.cache-ttl:
+      default: 10m
+      description: How long to persist a patch in cache whilst it has not been actively retrieved.
+      type: string
+    patch-cache.cache-size:
+      default: 128
+      description: The size of the cache in patches.
+      type: int
+    patch-sync.enabled:
+      default: false
+      description: |
+        Whether or not if this instance of Livepatch Server should sync patches from another instance.
+
+        A sync is effectively a "shared" storage, having access to the same pool of patches as the upstream
+        services patch storage.
+      type: boolean
+    patch-sync.flavors:
+      default: "generic,lowlatency,aws"
+      description: >
+        A comma separated list of kernel flavors to download patches for.
+        If this field is empty, the patch sync will gather all flavors.
+      type: string
+    patch-sync.interval:
+      default: "1h"
+      description: Period between automatic patch snapshot downloads.
+      type: string
+    patch-sync.architectures:
+      description: >-
+        Comma-separated list of architectures to download patches for.
+        When no value is present, all are synced.
+        If this field is empty, the patch sync will gather all architectures.
+      type: string
+      default: ""
+    patch-sync.machine-count-strategy:
+      default: "bucket"
+      description: The strategy to use when counting machines in a set.
+      type: string
+    patch-sync.send-machine-reports:
+      default: false
+      description: Enable sending reports from local machines during patch synchronisation.
+      type: boolean
+    patch-sync.upstream-url:
+      default: https://livepatch.canonical.com
+      description: Livepatch server to download patch snapshots from.
+      type: string
+    patch-sync.token:
+      default: ""
+      description: |
+        Token generated from the admin-tool to authenticate machine to machine.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        patch-sync.token-secret to a Juju secret URI instead.
+      type: string
+    patch-sync.token-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to patch-sync.token: takes priority over
+        it when both are set. Must be set to the URI of a Juju secret containing a `value`
+        key with the token.
+      type: secret
+    patch-sync.minimum-kernel-version:
+      description: >-
+        A minimum kernel version of format "0.0.0" denoting the lowest
+        kernel version to download patches for. When no value is present,
+        all are synced. For example, "5.4.0" will sync "5.4.0" and up.
+      type: string
+      default: ""
+    patch-sync.sync-tiers:
+      description: >-
+        Mirror patch tier information from the upstream server.
+        WARNING: Enabling this feature will modify existing
+        tier information in order to match the upstream server's
+        tier structure. Avoid this if you already have tiers setup.
+      type: boolean
+      default: false
+    patch-sync.proxy.enabled:
+      default: false
+      description: Whether or not to proxy patch syncs.
+      type: boolean
+    patch-sync.proxy.http:
+      default: ""
+      description: A comma separated list HTTP proxies to query for patches.
+      type: string
+    patch-sync.proxy.https:
+      default: ""
+      description: A comma separated list HTTPS proxies to query for patches.
+      type: string
+    patch-sync.proxy.no-proxy:
+      default: ""
+      description: A comma separated list of domains, IP CIDRs and/or ports to block.
+      type: string
+    patch-blocklist.enabled:
+      default: false
+      description: Whether or not to enable patch blocklist functionality for the admin tool.
+      type: boolean
+    patch-blocklist.refresh-interval:
+      default: 5m
+      description: How often to check for new blocklist entries.
+      type: string
+
+    cve-lookup.enabled:
+      default: false
+      description: |
+        Whether or not if this instance of Livepatch Server should lookup fixed CVEs in response to client requests.
+      type: boolean
+    cve-lookup.auth-required:
+      default: false
+      description: |
+        Whether or not requests to retrieve fixed CVEs should be authenticated.
+      type: boolean
+    cve-sync.enabled:
+      default: false
+      description: |
+        Whether or not if this instance of Livepatch Server should sync fixed CVEs data.
+      type: boolean
+    cve-sync.source-url:
+      default: ""
+      description: |
+        Address of Livepatch CVE service to sync fixed CVEs data from.
+      type: string
+    cve-sync.interval:
+      default: "1h"
+      description: Period between automatic refreshing of fixed CVE data.
+      type: string
+    cve-sync.timeout:
+      default: "5m"
+      description: |
+        Timeout for the CVE sync client. The CVE sync will timeout if the CVE service
+        takes longer than the timeout defined, to send the CVE data.
+      type: string
+    cve-sync.proxy.enabled:
+      default: false
+      description: Whether or not to proxy fixed CVE data syncs.
+      type: boolean
+    cve-sync.proxy.http:
+      default: ""
+      description: A comma separated list HTTP proxies to query fixed CVE data.
+      type: string
+    cve-sync.proxy.https:
+      default: ""
+      description: A comma separated list HTTPS proxies to query fixed CVE data.
+      type: string
+    cve-sync.proxy.no-proxy:
+      default: ""
+      description: A comma separated list of domains, IP CIDRs and/or ports to block when querying fixed CVE data.
+      type: string
+
+    lsn-sync.enabled:
+      default: false
+      description: |
+        Whether or not if this instance of Livepatch Server should sync LSN data.
+      type: boolean
+    lsn-sync.source-url:
+      default: ""
+      description: |
+        Address of Livepatch CVE service to sync LSN data from.
+      type: string
+    lsn-sync.interval:
+      default: "1h"
+      description: Period between automatic refreshing of LSN data.
+      type: string
+    lsn-sync.timeout:
+      default: "5m"
+      description: |
+        Timeout for the LSN sync client. The LSN sync will timeout if the CVE service
+        takes longer than the timeout defined, to send the LSN data.
+      type: string
+    lsn-sync.proxy.enabled:
+      default: false
+      description: Whether or not to proxy LSN data syncs.
+      type: boolean
+    lsn-sync.proxy.http:
+      default: ""
+      description: A comma separated list HTTP proxies to query LSN data.
+      type: string
+    lsn-sync.proxy.https:
+      default: ""
+      description: A comma separated list HTTPS proxies to query LSN data.
+      type: string
+    lsn-sync.proxy.no-proxy:
+      default: ""
+      description: A comma separated list of domains, IP CIDRs and/or ports to block when querying LSN data.
+      type: string
+
+    machine-reports.database.enabled:
+      default: false
+      description: Whether or not to enabled machine reports writes to PostgreSQL.
+      type: boolean
+    machine-reports.database.retention-days:
+      default: 10
+      description: A thing used by the charm.
+      type: int
+    machine-reports.database.cleanup-row-limit:
+      default: 1000
+      description: Maximum number of rows to remove with a single report cleanup row.
+      type: int
+    machine-reports.database.cleanup-interval:
+      default: 6h
+      description: Time between report cleanup runs.
+      type: string
+
+    kpi-reports.enabled:
+      default: ""
+      description: |
+        Note: Currently not available for on-prem users!
+
+        Key performance index: Metrics. Enables KPI worker - sends metrics to Influx.
+      type: string
+    kpi-reports.interval:
+      default: "5m"
+      description: |
+        Note: Currently not available for on-prem users!
+
+        Specifies KPI worker frequency.
+      type: string
+
+    influx.enabled:
+      description: "Enables influx db support for time series reporting."
+      type: boolean
+    influx.url:
+      # TODO: This should be changed to a relation
+      description: "URL to connect to influx DB"
+      type: string
+    influx.token:
+      description: |
+        Token to use for influx.
+
+        Deprecated: this option is stored in plain text in Juju's config; prefer setting
+        influx.token-secret to a Juju secret URI instead.
+      type: string
+    influx.token-secret:
+      description: |
+        Preferred, Juju-secret-backed alternative to influx.token: takes priority over it
+        when both are set. Must be set to the URI of a Juju secret containing a `value`
+        key with the token.
+      type: secret
+    influx.bucket:
+      description: "Bucket to send data"
+      type: string
+    influx.ping_bucket:
+      description: "Bucket to send ping data under a different retention policy"
+      type: string
+
+    influx.organization:
+      description: "Organization name"
+      type: string
+
+    profiler.enabled:
+      description: >
+        Whether to enable or disable continuous profiling on the server or not.
+      type: boolean
+      default: false
+    profiler.server_address:
+      description: The pyroscope server address to send the metrics to.
+      type: string
+    profiler.hostname:
+      description: the hostname of the server the profiler is running on. This is used as a tag to group metrics by the server it is running on.
+      type: string
+    profiler.sample_rate:
+      description: sample rate for the profiler in Hz. 100 means reading 100 times per second.
+      type: int
+      default: 100
+    profiler.upload_rate:
+      description: The frequency of upload to the profiling server
+      type: int
+    profiler.mutex_profile_fraction:
+      description: >
+        this turns on mutex profiles with rate indicating the fraction of mutex contention events reported
+        in the mutex profile. On average, 1/rate events are reported. Setting an aggressive rate can hurt performance. ProfileMutexes must be True
+      type: int
+      default: 5
+    profiler.block_profile_rate:
+      description: >
+        this is the sampling average of one blocking event per `BlockProfileRate` nanoseconds spent blocked.
+        For example, set rate to 1000000000 (aka int(time.Second.Nanoseconds())) to record one sample per second a goroutine is blocked.
+        It is recommended to set this to values greater than 10,000.
+        For more info, visit this: https://github.com/DataDog/go-profiler-notes/blob/main/block.md#benchmarks
+      type: int
+      default: 50000
+    profiler.profile_allocations:
+      description: this will profile the memory for allocated space as well as allocated objects
+      type: boolean
+      default: false
+    profiler.profile_inuse:
+      description: this will profile the overall used memory as well as the memory used by objects
+      type: boolean
+      default: false
+    profiler.profile_mutexes:
+      description: this turns on profiling for mutexes
+      default: false
+      type: boolean
+    profiler.profile_blocks:
+      description: would profile blocking events (channels, select, etc) with the BlockProfileRate frequency.
+      type: boolean
+      default: false
+    profiler.profile_goroutines:
+      description: would profile separate concurrent running goroutines.
+      default: false
+      type: boolean
+
+    ###########
+    # Tracing #
+    ###########
+    tracing.enabled:
+      default: false
+      description: Whether to enable OpenTelemetry tracing. This is a manual toggle and is independent of any charm relation.
+      type: boolean
+    tracing.service-name:
+      default: "livepatch-server"
+      description: Service name reported in traces.
+      type: string
+    tracing.sample-rate:
+      default: 1.0
+      description: Fraction of traces to sample (0.0 to 1.0).
+      type: float
+
+    ################
+    # OTLP Metrics #
+    ################
+    otel-metrics.enabled:
+      default: false
+      description: Whether or not to enable pushing OTLP metrics (requires the send-otlp relation).
+      type: boolean
+    otel-metrics.service-name:
+      default: "livepatch-server"
+      description: Service name reported in OTLP metrics.
+      type: string
+    otel-metrics.export-interval:
+      default: "60s"
+      description: How often metrics are exported (e.g. "60s", "1m").
+      type: string
+    otel-metrics.export-timeout:
+      default: "30s"
+      description: Timeout for each metrics export attempt (e.g. "30s").
+      type: string

@@ -18,22 +18,41 @@ schema-upgrade:
 
 set-basic-users:
   description: |
-    Sets the basic users for the server
+    Hashes the plaintext passwords for the given users, ready to be applied
+    with `juju config`.
 
-    This action overrides all existing users currently set
-    in livepatch, unless the append param is provided.
+    This action does not change the server's configuration itself; it returns
+    a `auth.basic.users` value (and the `juju config` command to set it) that
+    you apply yourself. Use the `append` param to combine the new users with
+    the ones already set in `auth.basic.users`, instead of replacing them.
+
+    Provide exactly one of `users` or `users-secret`. `users` is simpler, but
+    its plaintext passwords are stored in Juju's action history
+    (`juju show-task`/`juju show-operation`) indefinitely; prefer
+    `users-secret` outside of local testing:
+
+      juju add-secret my-users users="user1:pass1,user2:pass2"
+      juju grant-secret my-users <app-name>
+      juju run <app-name>/leader set-basic-users users-secret=<secret-uri>
   params:
     users:
       type: string
       description: |
         A comma delimited list of users and password in the form of 
         <username1:password1>,<username2:password2>,<username3:password3>
+
+        Stored in plaintext in Juju's action history. Prefer `users-secret`
+        outside of local testing.
+    users-secret:
+      type: string
+      description: |
+        The URI of a Juju secret granted to this application, whose content
+        has a `users` key in the same format as the `users` param.
     append:
       type: boolean
       description: |
-        By using append, it will no longer override all default users. But rather
-        append any additional users to the servers configuration.
-  required: [users]
+        By using append, the hashed users are combined with the users already
+        set in the `auth.basic.users` config option, instead of replacing them.
 
 restart:
   description: Restart livepatch service daemon.
