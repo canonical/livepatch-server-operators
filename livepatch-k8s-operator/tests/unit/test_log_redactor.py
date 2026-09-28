@@ -137,6 +137,12 @@ class TestRedactFunction(unittest.TestCase):
         self.assertIn(_REDACTED, result)
         self.assertNotIn("tok123", result)
 
+    def test_lp_influx_token_redacted(self):
+        """LP_INFLUX_TOKEN env-var assignment has its value redacted."""
+        result = _redact("LP_INFLUX_TOKEN=tok123")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("tok123", result)
+
     def test_lp_database_connection_string_redacted(self):
         """LP_DATABASE_CONNECTION_STRING env-var assignment has its value redacted."""
         result = _redact("LP_DATABASE_CONNECTION_STRING=postgresql://u:p@h/db")
@@ -148,6 +154,92 @@ class TestRedactFunction(unittest.TestCase):
         result = _redact("LP_PATCH_STORAGE_S3_SECRET_KEY=secretvalue")
         self.assertIn(_REDACTED, result)
         self.assertNotIn("secretvalue", result)
+
+    def test_lp_azure_account_key_redacted(self):
+        """LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_azure_connection_string_redacted(self):
+        """LP_PATCH_STORAGE_AZURE_CONNECTION_STRING env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_AZURE_CONNECTION_STRING=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_azure_client_secret_redacted(self):
+        """LP_PATCH_STORAGE_AZURE_CLIENT_SECRET env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_AZURE_CLIENT_SECRET=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_gcs_credentials_json_redacted(self):
+        """LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_ibm_access_key_redacted(self):
+        """LP_PATCH_STORAGE_IBM_ACCESS_KEY env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_IBM_ACCESS_KEY=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_ibm_secret_key_redacted(self):
+        """LP_PATCH_STORAGE_IBM_SECRET_KEY env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_IBM_SECRET_KEY=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_ibm_api_key_redacted(self):
+        """LP_PATCH_STORAGE_IBM_API_KEY env-var assignment has its value redacted."""
+        result = _redact("LP_PATCH_STORAGE_IBM_API_KEY=secretvalue")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("secretvalue", result)
+
+    def test_lp_gcs_credentials_json_with_spaces_fully_redacted(self):
+        """A value containing whitespace (e.g. JSON credentials) is fully redacted, not truncated."""
+        result = _redact('LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON={"type": "service_account", "project_id": "my-project"}')
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("service_account", result)
+        self.assertNotIn("project_id", result)
+
+    def test_lp_sensitive_env_var_followed_by_another_on_same_line(self):
+        """A sensitive value with spaces stops before a subsequent KEY=value pair on the same line."""
+        result = _redact("LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON=a b c LP_OTHER_VAR=untouched")
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("a b c", result)
+        self.assertIn("LP_OTHER_VAR=untouched", result)
+
+    def test_lp_multiline_credentials_fully_redacted(self):
+        """A value spanning multiple lines (e.g. a PEM key embedded in pretty-printed JSON) is fully redacted."""
+        msg = (
+            'LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON={\n'
+            '  "private_key": "-----BEGIN PRIVATE KEY-----\n'
+            "MIIEvQIBADANBgkqhkiG9w0BAQ\n"
+            '-----END PRIVATE KEY-----"\n'
+            "}\n"
+            "LP_OTHER_VAR=untouched"
+        )
+        result = _redact(msg)
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("BEGIN PRIVATE KEY", result)
+        self.assertNotIn("MIIEvQIBADANBgkqhkiG9w0BAQ", result)
+        self.assertIn("LP_OTHER_VAR=untouched", result)
+
+    def test_lp_multiline_credentials_with_base64_padding_fully_redacted(self):
+        """A base64/PEM line ending in '==' padding isn't mistaken for a KEY=value boundary."""
+        msg = "LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON=-----BEGIN PRIVATE KEY-----\nABCD==\n-----END PRIVATE KEY-----\nLP_OTHER_VAR=untouched"
+        result = _redact(msg)
+        self.assertIn(_REDACTED, result)
+        self.assertNotIn("ABCD==", result)
+        self.assertNotIn("BEGIN PRIVATE KEY", result)
+        self.assertIn("LP_OTHER_VAR=untouched", result)
+
+    def test_lp_sensitive_value_trailing_whitespace_preserved(self):
+        """Trailing whitespace/newline at the end of the message is not absorbed into the redaction."""
+        result = _redact("LP_PATCH_STORAGE_S3_SECRET_KEY=secretvalue  \n")
+        self.assertEqual(result, "LP_PATCH_STORAGE_S3_SECRET_KEY=***REDACTED***  \n")
 
     def test_innocent_text_untouched(self):
         """A message with no sensitive data is returned unchanged."""
@@ -304,6 +396,17 @@ class TestSetupLogRedaction(unittest.TestCase):
             self.assertIn(_REDACTED, output)
         finally:
             root.removeHandler(handler)
+
+    def test_installs_redacting_filter_on_root(self):
+        """setup_log_redaction registers a RedactingFilter on the root logger."""
+        root = logging.getLogger()
+        try:
+            setup_log_redaction()
+            self.assertTrue(any(isinstance(f, RedactingFilter) for f in root.filters))
+        finally:
+            for f in list(root.filters):
+                if isinstance(f, RedactingFilter):
+                    root.removeFilter(f)
 
 
 if __name__ == "__main__":
