@@ -11,7 +11,7 @@ contracts address, and re-publishing this unit's outgoing databags.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from urllib.parse import ParseResult, quote, urlunparse
 
 from ops.model import ModelError, Relation, RelationDataContent
@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 DATABASE_NAME = "livepatch"
 DATABASE_RELATION = "database"
 DATABASE_RELATION_LEGACY = "database-legacy"
+METRICS_DB_NAME = "livepatch-metrics-db"
+METRICS_DB_RELATION = "metrics-db"
+CVE_CATALOG_RELATION = "cve-catalog"
+SEND_OTLP_RELATION = "send-otlp"
 PRO_AIRGAPPED_SERVER_RELATION = "pro-airgapped-server"
 WEBSITE_RELATION = "website"
 PEER_RELATION = "livepatch"
@@ -70,13 +74,14 @@ def check_database_relations(charm: Any) -> None:
         )
 
 
-def build_database_uri(username: str, password: str, endpoints: str) -> str:
+def build_database_uri(username: str, password: str, endpoints: str, db_name: str = DATABASE_NAME) -> str:
     """Compose a PostgreSQL connection string from database relation data.
 
     Args:
         username: the database username.
         password: the database password.
         endpoints: a comma-separated list of endpoints; the first is used.
+        db_name: the database to connect to.
 
     Returns:
         The composed connection string.
@@ -84,7 +89,7 @@ def build_database_uri(username: str, password: str, endpoints: str) -> str:
     endpoint = endpoints.split(",", 1)[0]
     # Reserved URI characters in either credential (`@`, `:`, `/`, ...) would
     # otherwise be misparsed as part of the URI's structure.
-    return f"postgresql://{quote(username, safe='')}:{quote(password, safe='')}@{endpoint}/{DATABASE_NAME}"
+    return f"postgresql://{quote(username, safe='')}:{quote(password, safe='')}@{endpoint}/{db_name}"
 
 
 def database_uri(database: Any) -> Optional[str]:
@@ -111,6 +116,62 @@ def database_uri(database: Any) -> Optional[str]:
         if username and password and endpoints:
             return build_database_uri(username, password, endpoints)
     return None
+
+
+def metrics_db_uri(metrics_db: Any) -> Optional[str]:
+    """Read the connection string from the metrics-db relation.
+
+    Args:
+        metrics_db: the `DatabaseRequires` instance for the metrics database.
+
+    Returns:
+        The connection string, or None while the relation data is incomplete.
+    """
+    for fields in metrics_db.fetch_relation_data().values():
+        username = fields.get("username")
+        password = fields.get("password")
+        endpoints = fields.get("endpoints")
+        if username and password and endpoints:
+            return build_database_uri(username, password, endpoints, db_name=METRICS_DB_NAME)
+    return None
+
+
+def cve_catalog_url(charm: Any) -> Optional[str]:
+    """Read the CVE catalog service address, if related.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        The CVE catalog service URL published by the remote application, or
+        None when unavailable.
+    """
+    related = charm.model.relations.get(CVE_CATALOG_RELATION, None)
+    if not related:
+        return None
+    url = related[0].data.get(related[0].app, {}).get("url", "")
+    return url or None
+
+
+def otel_metrics_endpoint(charm: Any) -> Optional[Tuple[str, str, bool]]:
+    """Read the OTLP metrics push endpoint from the send-otlp relation, if related.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        A tuple of (endpoint, protocol, insecure), or None when unavailable.
+    """
+    related = charm.model.relations.get(SEND_OTLP_RELATION, None)
+    if not related:
+        return None
+    data = related[0].data.get(related[0].app, {})
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        return None
+    protocol = data.get("protocol", "http")
+    insecure = data.get("insecure", "true") == "true"
+    return endpoint, protocol, insecure
 
 
 def strip_query_parameters(uri: str) -> str:

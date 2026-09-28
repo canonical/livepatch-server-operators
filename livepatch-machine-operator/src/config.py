@@ -37,6 +37,12 @@ OPT_PATCH_SYNC_ENABLED = "patch-sync.enabled"
 # Snap configuration keys the charm computes rather than passes through.
 KEY_IS_LEADER = "server.is-leader"
 KEY_DB_CONNECTION_STRING = "database.connection-string"
+KEY_TIMESCALE_DB_CONNECTION_STRING = "timescale_db.connection-string"
+KEY_CVE_SYNC_SOURCE_URL = "cve-sync.source-url"
+KEY_LSN_SYNC_SOURCE_URL = "lsn-sync.source-url"
+KEY_OTEL_METRICS_OTLP_ENDPOINT = "otel-metrics.otlp-endpoint"
+KEY_OTEL_METRICS_PROTOCOL = "otel-metrics.protocol"
+KEY_OTEL_METRICS_INSECURE = "otel-metrics.insecure"
 KEY_PATCH_SYNC_ID = "patch-sync.id"
 KEY_CONTRACTS_ENABLED = "contracts.enabled"
 KEY_CONTRACTS_URL = "contracts.url"
@@ -91,7 +97,6 @@ SECRET_GROUPS: Dict[str, Dict[str, str]] = {
         "client-secret": "patch-storage.azure-client-secret",
     },
 }
-
 
 class InvalidCharmConfigError(Exception):
     """Raised when the charm configuration fails validation."""
@@ -272,6 +277,9 @@ class CharmConfig:
         is_leader: bool,
         model_uuid: str,
         pro_airgapped_url: Optional[str],
+        timescale_db_uri: Optional[str] = None,
+        cve_catalog_url: Optional[str] = None,
+        otel_metrics_endpoint: Optional[Tuple[str, str, bool]] = None,
     ) -> Dict[str, Any]:
         """Render the desired snap configuration.
 
@@ -283,6 +291,11 @@ class CharmConfig:
             is_leader: whether this unit is the Juju leader.
             model_uuid: the Juju model UUID, used as the patch-sync identifier.
             pro_airgapped_url: the air-gapped Pro contracts URL, if related.
+            timescale_db_uri: the timescale/metrics database connection string,
+                if the metrics-db relation is established.
+            cve_catalog_url: the CVE catalog service URL, if related.
+            otel_metrics_endpoint: the (endpoint, protocol, insecure) OTLP
+                metrics push target from the send-otlp relation, if related.
 
         Returns:
             A flat mapping of prefixed snap configuration keys to values.
@@ -305,5 +318,29 @@ class CharmConfig:
             configuration[KEY_CONTRACTS_URL] = pro_airgapped_url
             configuration.pop(KEY_CONTRACTS_USER, None)
             configuration.pop(KEY_CONTRACTS_PASSWORD, None)
+
+        # The connection string for the timescale metrics database is always
+        # rendered, so removing the relation clears the snap key (snapd drops
+        # options set to an empty string).
+        configuration[KEY_TIMESCALE_DB_CONNECTION_STRING] = timescale_db_uri or ""
+
+        # The related CVE catalog serves both CVE and LSN data, so it overrides
+        # the manual cve-sync.source-url/lsn-sync.source-url options on every
+        # unit. When unrelated, the options' empty defaults apply unchanged.
+        if cve_catalog_url:
+            configuration[KEY_CVE_SYNC_SOURCE_URL] = cve_catalog_url
+            configuration[KEY_LSN_SYNC_SOURCE_URL] = cve_catalog_url
+
+        # The send-otlp relation provides the OTLP metrics push endpoint.
+        # Always rendered so a removed relation clears the snap keys.
+        if otel_metrics_endpoint:
+            endpoint, protocol, insecure = otel_metrics_endpoint
+            configuration[KEY_OTEL_METRICS_OTLP_ENDPOINT] = endpoint
+            configuration[KEY_OTEL_METRICS_PROTOCOL] = protocol
+            configuration[KEY_OTEL_METRICS_INSECURE] = insecure
+        else:
+            configuration[KEY_OTEL_METRICS_OTLP_ENDPOINT] = ""
+            configuration[KEY_OTEL_METRICS_PROTOCOL] = ""
+            configuration[KEY_OTEL_METRICS_INSECURE] = ""
 
         return {f"{SNAP_CONFIG_PREFIX}.{key}": value for key, value in configuration.items()}

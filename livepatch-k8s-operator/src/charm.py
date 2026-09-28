@@ -25,6 +25,8 @@ from urllib.parse import urlparse
 import ops
 import ops.pebble
 import paas_charm.app
+import paas_charm.charm
+import paas_charm.databases
 import paas_charm.go
 import pgsql
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequiresEvent
@@ -32,6 +34,35 @@ from paas_charm.exceptions import CharmConfigInvalidError
 from paas_charm.utils import config_get_with_secret
 from charms.nginx_ingress_integrator.v0.nginx_route import require_nginx_route
 from paas_charm.databases import PaaSDatabaseRequires
+
+# paas_charm's make_database_requirers iterates through all relations in
+# metadata matching SUPPORTED_DB_INTERFACES and attempts to instantiate a
+# PaaSDatabaseRequires for each. When a charm defines an additional relation
+# with the same interface (like `metrics-db: interface: postgresql_client`),
+# make_database_requirers maps it to the same key 'postgresql' and creates
+# a duplicate PaaSDatabaseRequires object, raising a RuntimeError.
+# We patch make_database_requirers to only create requirers for standard relation names.
+_orig_make_database_requirers = paas_charm.databases.make_database_requirers
+
+
+def _patched_make_database_requirers(
+    charm: ops.CharmBase, database_name: str
+) -> typing.Dict[str, PaaSDatabaseRequires]:
+    databases: dict[str, PaaSDatabaseRequires] = {}
+    for req_name, require in charm.framework.meta.requires.items():
+        if require.interface_name in paas_charm.databases.SUPPORTED_DB_INTERFACES:
+            expected_name = paas_charm.databases.SUPPORTED_DB_INTERFACES[require.interface_name]
+            if req_name == expected_name and req_name not in databases:
+                databases[req_name] = PaaSDatabaseRequires(
+                    charm,
+                    relation_name=req_name,
+                    database_name=database_name,
+                )
+    return databases
+
+
+paas_charm.databases.make_database_requirers = _patched_make_database_requirers
+paas_charm.charm.make_database_requirers = _patched_make_database_requirers
 
 import utils
 from legacy_constants import map_old_config_to_new_config
@@ -295,21 +326,10 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             args: passthrough to CharmBase/PaasCharm.
         """
-        # `metrics-db` intentionally shares the `postgresql_client` interface with
-        # `postgresql` (so it can relate to a stock postgresql-k8s deployment), but
-        # paas_charm.databases.make_database_requirers() keys auto-wired requirers by
-        # *interface type*, not relation name, so having both present crashes every
-        # hook with "two objects claiming to be ... PaaSDatabaseRequires[postgresql]
-        # have been created". Hide `metrics-db` from that pass only; it is wired up
-        # manually below via `_metrics_db` instead.
-        framework = args[0]
-        requires = framework.meta.requires
-        hidden_metrics_db_require = requires.pop(METRICS_DB_RELATION, None)
-        try:
-            super().__init__(*args)
-        finally:
-            if hidden_metrics_db_require is not None:
-                requires[METRICS_DB_RELATION] = hidden_metrics_db_require
+        # The `metrics-db`/`postgresql` interface collision in make_database_requirers()
+        # (see module-level patch above) is handled before this call, so no special
+        # metadata juggling is needed here anymore.
+        super().__init__(*args)
         setup_log_redaction()
 
         # Cache the configured ingress method so `_update_ingress_method` is

@@ -397,6 +397,17 @@ class TestSetupLogRedaction(unittest.TestCase):
         finally:
             root.removeHandler(handler)
 
+    def test_installs_redacting_filter_on_root(self):
+        """setup_log_redaction registers a RedactingFilter on the root logger."""
+        root = logging.getLogger()
+        try:
+            setup_log_redaction()
+            self.assertTrue(any(isinstance(f, RedactingFilter) for f in root.filters))
+        finally:
+            for f in list(root.filters):
+                if isinstance(f, RedactingFilter):
+                    root.removeFilter(f)
+
 
 if __name__ == "__main__":
     unittest.main()
