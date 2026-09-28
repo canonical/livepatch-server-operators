@@ -7,11 +7,15 @@ Provides a logging Filter and Formatter that scrub sensitive information
 (passwords, tokens, API keys, connection strings) from log records before
 they reach any handler.
 
-The generic patterns (URIs with credentials, Authorization headers and
-key=value pairs with secret-sounding keys) are always active. Charms append
-their own sensitive assignment patterns via :func:`register_sensitive_pattern`:
-the k8s charm redacts ``LP_*`` environment-variable assignments, while the
+The generic patterns (URIs with credentials, Authorization headers,
+key=value pairs with secret-sounding keys and sensitive ``LP_*``
+environment-variable assignments) are always active. Charms append their own
+sensitive assignment patterns via :func:`register_sensitive_pattern`: the
 machine charm redacts ``lp.*`` snap-config assignments.
+
+If you add a new sensitive config option, add the corresponding ``LP_*``
+env-var name to ``_SENSITIVE_ENV_VAR_PATTERN`` (and, for the machine charm,
+the ``lp.*`` snap-config key to its charm-specific pattern).
 
 To activate redaction, call ``setup_log_redaction()`` once early in the
 charm's ``__init__`` method, after ``super().__init__()``.
@@ -52,11 +56,56 @@ _KV_PATTERN = re.compile(
     r"credentials|host"
     r")\b)"
     r"(?P<sep>\s*[=:]\s*)"
-    r"(?P<quote>['\"]?)"
-    r"(?P<value>[^\s'\"]+)"
-    r"(?P=quote)",
+    r"(?:"
+    r"(?P<q>['\"])(?P<qv>.*?)(?P=q)"
+    r"|"
+    r"(?P<uv>[^\s'\"]+)"
+    r")",
     re.IGNORECASE,
 )
+
+# Sensitive LP_* env-var assignments, e.g. the k8s charm's Pebble environment
+# (map_config_to_env_vars()/get_env_vars()) or snap config rendered as env vars.
+_SENSITIVE_ENV_VAR_PATTERN = re.compile(
+    r"(?P<varname>"
+    r"LP_CONTRACTS_PASSWORD"
+    r"|LP_PATCH_SYNC_TOKEN"
+    r"|LP_PATCH_STORAGE_S3_SECRET_KEY"
+    r"|LP_PATCH_STORAGE_S3_ACCESS_KEY"
+    r"|LP_PATCH_STORAGE_SWIFT_API_KEY"
+    r"|LP_PATCH_STORAGE_SWIFT_USERNAME"
+    r"|LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY"
+    r"|LP_PATCH_STORAGE_AZURE_CONNECTION_STRING"
+    r"|LP_PATCH_STORAGE_AZURE_CLIENT_SECRET"
+    r"|LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON"
+    r"|LP_PATCH_STORAGE_IBM_ACCESS_KEY"
+    r"|LP_PATCH_STORAGE_IBM_SECRET_KEY"
+    r"|LP_PATCH_STORAGE_IBM_API_KEY"
+    r"|LP_AUTH_BASIC_USERS"
+    r"|LP_INFLUX_TOKEN"
+    r"|LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"
+    r"|LP_DATABASE_CONNECTION_STRING"
+    r")"
+    r"(?P<sep>=)"
+    # Non-greedy, spanning newlines (DOTALL): stop only before a run of trailing
+    # whitespace at end of string, or right before what looks like a genuine
+    # subsequent KEY=value assignment (env var names always contain an
+    # underscore, unlike base64/PEM content lines, which can otherwise be
+    # mistaken for one), so multi-line secrets (PEM keys, pretty-printed JSON)
+    # are fully redacted without leaking a suffix or absorbing trailing whitespace.
+    r"(?P<value>.+?)(?=\s+[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+=|\s*$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _kv_replace(m: re.Match) -> str:
+    key = m.group("key")
+    sep = m.group("sep")
+    q = m.group("q")
+    if q:
+        return f"{key}{sep}{q}{_REDACTED}{q}"
+    return f"{key}{sep}{_REDACTED}"
+
 
 _PATTERNS = [
     (
@@ -69,7 +118,11 @@ _PATTERNS = [
     ),
     (
         _KV_PATTERN,
-        lambda m: (f"{m.group('key')}{m.group('sep')}" f"{m.group('quote')}{_REDACTED}{m.group('quote')}"),
+        _kv_replace,
+    ),
+    (
+        _SENSITIVE_ENV_VAR_PATTERN,
+        lambda m: f"{m.group('varname')}{m.group('sep')}{_REDACTED}",
     ),
 ]
 
@@ -102,17 +155,58 @@ def _redact_if_str(value: object) -> object:
 class RedactingFilter(logging.Filter):
     """Logging filter that redacts sensitive data from log records in-place.
 
-    Handles both pre formatted log messages (record.msg) and structured log arguments.
+    Handles both pre formatted log messages (record.msg) and structured log
+    arguments. When ``record.args`` is present the filter avoids redacting
+    ``record.msg`` itself so ``%s``/``%(key)s`` placeholders are preserved
+    for ``LogRecord.getMessage()``; the final rendered message is instead
+    redacted via the formatter / LogRecord factory.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Sanitise *record* in-place; never suppresses the record."""
-        record.msg = _redact(str(record.msg))
+        if not record.args:
+            record.msg = _redact(str(record.msg))
         if isinstance(record.args, dict):
             record.args = {k: _redact_if_str(v) for k, v in record.args.items()}
         elif record.args:
             record.args = tuple(_redact_if_str(arg) for arg in record.args)
+        if record.exc_info and record.exc_info[0] is not None:
+            try:
+                record.exc_text = _redact(logging.Formatter().formatException(record.exc_info))
+            except Exception:
+                pass
+        if record.stack_info:
+            record.stack_info = _redact(record.stack_info)
         return True
+
+
+_orig_log_record_factory = None
+
+
+def _install_redacting_log_record_factory() -> None:
+    global _orig_log_record_factory
+    if _orig_log_record_factory is not None:
+        return
+    _orig_log_record_factory = logging.getLogRecordFactory()
+
+    def _factory(*args, **kwargs):
+        record = _orig_log_record_factory(*args, **kwargs)
+        orig_getMessage = record.getMessage
+
+        def _redacted_getMessage():
+            return _redact(orig_getMessage())
+
+        record.getMessage = _redacted_getMessage  # type: ignore[method-assign]
+        if record.exc_info and record.exc_info[0] is not None and not record.exc_text:
+            try:
+                record.exc_text = _redact(logging.Formatter().formatException(record.exc_info))
+            except Exception:
+                pass
+        if record.stack_info:
+            record.stack_info = _redact(record.stack_info)
+        return record
+
+    logging.setLogRecordFactory(_factory)
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +257,10 @@ def setup_log_redaction() -> None:
       were added after this call or attached to a non-root logger.
     - Each existing handler on the root logger has its formatter wrapped with
       ``RedactingFormatter`` as a safety net.
+    - A redacting :func:`logging.getLogRecordFactory` is installed so every
+      subsequent :class:`logging.LogRecord` (including those emitted by child
+      loggers that do not propagate through the root filter) has its rendered
+      message, exception and stack redacted.
     """
     root = logging.getLogger()
 
@@ -172,3 +270,5 @@ def setup_log_redaction() -> None:
     for handler in root.handlers:
         if not isinstance(handler.formatter, RedactingFormatter):
             handler.setFormatter(RedactingFormatter(handler.formatter))
+
+    _install_redacting_log_record_factory()

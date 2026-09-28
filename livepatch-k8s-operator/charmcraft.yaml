@@ -291,6 +291,7 @@ config:
       description: A comma separated list of domains, IP CIDRs and/or ports to block
         when querying the OAuth provider.
       type: string
+
     contracts.enabled:
       default: false
       description: Whether use of the contracts service is enabled.
@@ -972,7 +973,7 @@ config:
       type: boolean
       default: false
     profiler.profile_goroutines:
-      description: would profile separate concurrent running gorountines.
+      description: would profile separate concurrent running goroutines.
       default: false
       type: boolean
     tracing.enabled:

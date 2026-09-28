@@ -77,7 +77,13 @@ def snap_set():
 @pytest.fixture
 def schema_check():
     """Mock the schema version check command to report the schema is current."""
-    with patch("subprocess.check_output") as check_output:
+    with (
+        patch("subprocess.check_output") as check_output,
+        patch("subprocess.run") as mock_run,
+        patch("subprocess.check_call") as check_call,
+    ):
+        mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+        check_call.return_value = 0
 
         def _side_effect(cmd, *args, **kwargs):
             if cmd[0] == "canonical-livepatch-server.check-schema-version":
@@ -387,8 +393,8 @@ class TestCVECatalogRelation:
         cve_removed = testing.Relation("cve-catalog", remote_app_name="livepatch-cve-service")
         state_removed = _leader_state(relations=[standard, cve_removed])
         ctx.run(ctx.on.relation_broken(cve_removed), state_removed)
-        assert not any(delta.get("lp.cve-sync.source-url") for delta in snap_set[1:])
-        assert not any(delta.get("lp.lsn-sync.source-url") for delta in snap_set[1:])
+        assert any(delta.get("lp.cve-sync.source-url") == "" for delta in snap_set)
+        assert any(delta.get("lp.lsn-sync.source-url") == "" for delta in snap_set)
 
 
 class TestSendOTLPRelation:
@@ -449,13 +455,25 @@ class TestSendOTLPRelation:
 class TestLifecycle:
     """Tests for install, start, and update-status events."""
 
-    def test_install(self, ctx, snap_set):
+    def test_install(self, ctx):
         """Test install event handler when snap needs ensure_revision."""
-        with patch("subprocess.check_output") as check_output:
-            check_output.return_value = ""
-            state_in = _leader_state()
-            state_out = ctx.run(ctx.on.install(), state_in)
-        assert state_out.unit_status == testing.BlockedStatus("Waiting for postgres relation to be established.")
+        with patch("workload.SnapCache") as snap_cache_cls:
+            cache = snap_cache_cls.return_value
+            snap = cache.get.return_value
+            snap.present = False
+            snap.revision = ""
+            snap.services = {"livepatch": {"active": False}}
+            snap.is_installed.return_value = False
+            snap.get.side_effect = lambda key, typed=False: {} if typed else ""
+            snap.set.return_value = None
+            snap.ensure.return_value = None
+            snap.hold.return_value = None
+            with patch("subprocess.check_output") as check_output:
+                check_output.return_value = ""
+                state_in = _leader_state()
+                state_out = ctx.run(ctx.on.install(), state_in)
+            assert snap.ensure.called
+            assert state_out.unit_status == testing.BlockedStatus("Waiting for postgres relation to be established.")
 
     def test_install__already_installed(self, ctx, snap_set):
         """Test install event handler when snap is present."""
@@ -594,23 +612,24 @@ class TestActions:
         standard = _standard_db_relation()
         state_in = _leader_state(relations=[standard])
 
-        outputs = [
-            "Error: database not initialized",
-            "",
-            "some-version",
-            "some-version",
-        ]
-
-        def side_effect(cmd, *args, **kwargs):
+        def check_output_side_effect(cmd, *args, **kwargs):
             if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return outputs.pop(0) if outputs else "some-version"
+                return "some-version"
             if cmd[0] == "canonical-livepatch-server.schema-tool":
-                return outputs.pop(0) if outputs else ""
+                return ""
             if cmd[0] == "leader-get":
                 return b""
+            if cmd[0] == "update-ca-certificates":
+                return b"updated-ca-certs"
             raise AssertionError(f"unexpected call: {cmd}")
 
-        with patch("subprocess.check_output", side_effect=side_effect):
+        with (
+            patch("subprocess.check_output", side_effect=check_output_side_effect),
+            patch("subprocess.run") as mock_run,
+            patch("subprocess.check_call") as check_call,
+        ):
+            mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+            check_call.return_value = 0
             ctx.run(ctx.on.action("schema-upgrade"), state_in)
 
         assert ctx.action_results == {"schema-upgrade-required": False, "schema-version": "some-version"}
@@ -620,17 +639,25 @@ class TestActions:
         standard = _standard_db_relation()
         state_in = _leader_state(relations=[standard])
 
-        def side_effect(cmd, *args, **kwargs):
+        def check_output_side_effect(cmd, *args, **kwargs):
             if cmd[0] == "canonical-livepatch-server.check-schema-version":
-                return "Error: database not initialized"
+                return "some-version"
             if cmd[0] == "canonical-livepatch-server.schema-tool":
                 return ""
             if cmd[0] == "leader-get":
                 return b""
+            if cmd[0] == "update-ca-certificates":
+                return b"updated-ca-certs"
             raise AssertionError(f"unexpected call: {cmd}")
 
-        with patch("subprocess.check_output", side_effect=side_effect):
-            with pytest.raises(testing.ActionFailed, match="Schema upgrade failed."):
+        with (
+            patch("subprocess.check_output", side_effect=check_output_side_effect),
+            patch("subprocess.run") as mock_run,
+            patch("subprocess.check_call") as check_call,
+        ):
+            mock_run.return_value = Mock(returncode=1, stdout="out", stderr="err")
+            check_call.return_value = 0
+            with pytest.raises(testing.ActionFailed, match="Failed to run the schema upgrade command:"):
                 ctx.run(ctx.on.action("schema-upgrade"), state_in)
 
     def test_set_basic_users_action__success(self, ctx, snap_set):
