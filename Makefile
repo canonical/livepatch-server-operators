@@ -12,10 +12,9 @@ CONCIERGE := concierge-juju3.yaml
 
 sync:
 	@test -n "$$(ls -A $(SHARED)/livepatch_common)" || (echo "error: empty $(SHARED)/livepatch_common" && exit 1)
-	@mkdir -p $(K8S)/src $(K8S)/cos_custom/grafana_dashboards $(MACHINE)/src/grafana_dashboards
 	@rm -rf $(K8S)/src/livepatch_common $(MACHINE)/src/livepatch_common
-	@cp -r $(SHARED)/livepatch_common $(K8S)/src/livepatch_common
-	@cp -r $(SHARED)/livepatch_common $(MACHINE)/src/livepatch_common
+	@rm -rf $(K8S)/cos_custom/grafana_dashboards $(MACHINE)/src/grafana_dashboards
+	@mkdir -p $(K8S)/src $(K8S)/cos_custom/grafana_dashboards $(MACHINE)/src/grafana_dashboards
 	@cp $(SHARED)/grafana_dashboards/*.json $(K8S)/cos_custom/grafana_dashboards/
 	@cp $(SHARED)/grafana_dashboards/*.json $(MACHINE)/src/grafana_dashboards/
 
