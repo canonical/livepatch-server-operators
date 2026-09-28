@@ -325,9 +325,9 @@ class CharmConfig:
         configuration[KEY_TIMESCALE_DB_CONNECTION_STRING] = timescale_db_uri or ""
 
         # The related CVE catalog serves both CVE and LSN data, so it overrides
-        # the manual cve-sync.source-url/lsn-sync.source-url options. Only the
-        # leader drives catalog sync, matching the k8s charm's behaviour.
-        if cve_catalog_url and is_leader:
+        # the manual cve-sync.source-url/lsn-sync.source-url options on every
+        # unit. When unrelated, the options' empty defaults apply unchanged.
+        if cve_catalog_url:
             configuration[KEY_CVE_SYNC_SOURCE_URL] = cve_catalog_url
             configuration[KEY_LSN_SYNC_SOURCE_URL] = cve_catalog_url
 
