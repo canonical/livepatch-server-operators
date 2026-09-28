@@ -1,80 +1,107 @@
-# livepatch-server-operators
+# Canonical Livepatch Server Operators
 
-Monorepo for the [Livepatch Server](https://ubuntu.com/security/livepatch)
+## Description
 
-See `AGENTS.md` for concise guidance for AI coding and review agents.
+This repository contains the [Canonical Livepatch Server](https://ubuntu.com/security/livepatch)
+Juju charms for Kubernetes and machines. Livepatch Server serves kernel patches
+and their metadata to clients, allowing administrators to control patch rollout
+across their infrastructure.
 
-## Building the charms
-### 1. Stage the shared sources
+- [Kubernetes charm](livepatch-k8s-operator/README.md):
+  [`canonical-livepatch-server-k8s`](https://charmhub.io/canonical-livepatch-server-k8s)
+- [Machine charm](livepatch-machine-operator/README.md):
+  [`canonical-livepatch-server`](https://charmhub.io/canonical-livepatch-server)
+  <!-- TODO: Update the machine charm URL when its new Charmhub page is available. -->
 
-Charmcraft builds operate inside each charm's directory and cannot reference
-files outside it, so the shared code must be copied into the charm trees first:
+For an on-prem deployment including the server's dependencies, use the
+[Livepatch on-prem bundle](https://charmhub.io/canonical-livepatch-onprem)
+instead of deploying a server charm on its own.
+
+## Usage
+
+Deploy the charm appropriate for your Juju model:
+
+```sh
+# In a Kubernetes model
+juju deploy canonical-livepatch-server-k8s
+```
+
+```sh
+# In a machine model
+juju deploy canonical-livepatch-server
+```
+
+### Database integration
+
+The server requires PostgreSQL. The Kubernetes and machine charms use
+different endpoint names:
+
+```sh
+# In a Kubernetes model
+juju deploy postgresql-k8s --trust
+juju integrate canonical-livepatch-server-k8s:postgresql postgresql-k8s:database
+```
+
+```sh
+# In a machine model
+juju deploy postgresql
+juju integrate canonical-livepatch-server:database postgresql:database
+```
+
+See the [Kubernetes](livepatch-k8s-operator/README.md#integrations) and
+[machine](livepatch-machine-operator/README.md#integrations) charm READMEs for
+other integrations.
+
+## Development
+
+The charms share Python modules in `shared/livepatch_common/` and Grafana
+dashboards in `shared/grafana_dashboards/`. Charmcraft builds within each charm
+directory, so these sources must be staged inside the charm trees before
+packing or running per-charm tests:
 
 ```sh
 make sync
 ```
 
-This copies `shared/livepatch_common/` into both charms' `src/` directories and
-the shared dashboards into both charms' dashboard directories. These staged
-copies are generated; edit `shared/` and run `make sync` again after any change
-there.
+The copies in `livepatch-k8s-operator/src/livepatch_common/`,
+`livepatch-machine-operator/src/livepatch_common/`, and the charms' dashboard
+directories are generated. Edit `shared/`, not the copies, and rerun
+`make sync` after changes.
 
-### 2. Build the charms
+### Building the charms
 
-Build both charms with `opcli`:
+Build both charms with `opcli` (preferred), or pack them with Charmcraft:
 
 ```sh
 make opcli-build
-```
-
-Or build both charms with charmcraft directly:
-
-```sh
+# Or:
 make pack
 ```
 
-Or build each individually:
-
-```sh
-cd livepatch-k8s-operator && charmcraft pack
-cd livepatch-machine-operator && charmcraft pack
-```
-
-Each command produces a `.charm` file in the charm's directory, named after the
-charm and its base/architecture, e.g.:
+Both targets run `make sync` automatically. To pack one charm, run `make sync`
+first, then run `charmcraft pack` inside its directory. The artifacts are:
 
 - `livepatch-k8s-operator/canonical-livepatch-server-k8s_amd64.charm`
 - `livepatch-machine-operator/canonical-livepatch-server_ubuntu-22.04-amd64.charm`
 
-You can then deploy the local artifact with:
+### Running tests
+
+Run the shared-module tests and verify that both charms expose the same
+configuration options from the repository root:
 
 ```sh
-juju deploy ./livepatch-k8s-operator/canonical-livepatch-server-k8s_*.charm
-juju deploy ./livepatch-machine-operator/canonical-livepatch-server_*.charm
-```
-
-## Running tests
-
-Run `make sync` before running the per-charm tox environments.
-
-```sh
-# shared/livepatch_common unit tests
 tox -e shared
-
-# config-option parity between the two charms
 tox -e config-parity
-
-# machine charm unit tests
-cd livepatch-machine-operator && tox -e unit
-
-# k8s charm unit tests
-cd livepatch-k8s-operator && tox -e unit
 ```
 
-The `*.charm` files and the `.tox` environments are gitignored.
+After `make sync`, run each charm's unit tests:
 
-## Making changes to shared code
+```sh
+(cd livepatch-k8s-operator && tox -e unit)
+(cd livepatch-machine-operator && tox -e unit)
+```
 
-1. Edit the files under `shared/livepatch_common/` (and `shared/grafana_dashboards/` if needed).
-2. Run `make sync` to restage them into both charm trees.
-3. `make opcli-build` or `make pack` to rebuild, or run the `tox` environments above to test.
+## License
+
+These charms are distributed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE) for details.
