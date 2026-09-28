@@ -110,11 +110,15 @@ def mock_leader_settings(monkeypatch):
     `leader-get`/`leader-set` Juju hook tools directly, which Scenario doesn't mock.
     """
     store: dict = {}
+    # Capture the real implementations before patching, so the fallback branches
+    # below don't recurse into the patched functions themselves.
+    real_check_output = subprocess.check_output
+    real_check_call = subprocess.check_call
 
     def fake_check_output(cmd, *args, **kwargs):
         if cmd[0] == "leader-get":
             return yaml.safe_dump(store.get(cmd[-1])).encode("utf-8")
-        return subprocess.check_output(cmd, *args, **kwargs)  # pragma: no cover
+        return real_check_output(cmd, *args, **kwargs)  # pragma: no cover
 
     def fake_check_call(cmd, *args, **kwargs):
         if cmd[0] == "leader-set":
@@ -122,7 +126,7 @@ def mock_leader_settings(monkeypatch):
                 key, _, value = pair.partition("=")
                 store[key] = value
             return 0
-        return subprocess.check_call(cmd, *args, **kwargs)  # pragma: no cover
+        return real_check_call(cmd, *args, **kwargs)  # pragma: no cover
 
     monkeypatch.setattr(subprocess, "check_output", fake_check_output)
     monkeypatch.setattr(subprocess, "check_call", fake_check_call)
