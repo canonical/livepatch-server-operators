@@ -327,8 +327,7 @@ class LivepatchCharm(paas_charm.go.Charm):
             args: passthrough to CharmBase/PaasCharm.
         """
         # The `metrics-db`/`postgresql` interface collision in make_database_requirers()
-        # (see module-level patch above) is handled before this call, so no special
-        # metadata juggling is needed here anymore.
+        # is handled by the module-level patch above.
         super().__init__(*args)
         setup_log_redaction()
 
