@@ -18,7 +18,8 @@ def parse_input_file(input_file_path: str):
         return yaml_data
 
 
-if "psql_dbname" not in settings:
+def _restore_machine_only_migrations(settings, converted_options, removed_keys):
+    if "psql_dbname" not in settings:
         return
     psql_config = settings["psql_dbname"]
     if "value" not in psql_config or psql_config["value"] is None:
