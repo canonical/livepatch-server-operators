@@ -1,1901 +1,766 @@
-# Copyright 2024 Canonical Ltd.
+# Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
-# Learn more about testing at: https://juju.is/docs/sdk/testing
 
-import os
-import pathlib
-import unittest
-from typing import Any, Dict, List
-from unittest.mock import Mock, patch
+"""State-transition (Scenario) tests for the Livepatch k8s charm."""
+
+import dataclasses
 
 import pytest
+from ops import testing
 
-# This suite predates the migration to the paas_charm/go-framework charm
-# architecture: it targets the old container/pebble-layer model and imports
-# symbols (LIVEPATCH_SERVICE_NAME, SERVER_PORT, src.state.State) that no
-# longer exist. Skipped at module level (before the now-broken imports run)
-# pending a rewrite against the new charm using the ops-testing Scenario
-# framework.
-pytest.skip(
-    "test_charm.py predates the go-framework migration and needs a rewrite", allow_module_level=True
+from charm import LEGACY_DB_SECRET_LABEL, RESOURCE_TOKEN_SECRET_LABEL
+
+from .conftest import (
+    APP_CONTAINER,
+    DEFAULT_LAYER,
+    MAIN_DSN,
+    METRICS_DSN,
+    SCHEMA_TOOL_PATH,
+    SECRET_STORAGE_KEY,
+    SERVICE_NAME,
+    metrics_db_relation,
 )
 
-import yaml
-from charms.nginx_ingress_integrator.v0.nginx_route import NginxRouteRequirer
-from charms.traefik_k8s.v2.ingress import IngressPerAppRequirer
-from ops import pebble
-from ops.model import ActiveStatus, BlockedStatus, WaitingStatus
-from ops.testing import ActionFailed, Harness
-
-from log_redactor import _REDACTED
-from src.charm import LIVEPATCH_SERVICE_NAME, SERVER_PORT, LivepatchCharm
-from src.state import State
-
-APP_NAME = "canonical-livepatch-server-k8s"
-
-TEST_TOKEN = "test-token"  # nosec
-TEST_CA_CERT = "VGVzdCBDQSBDZXJ0Cg=="
-TEST_CA_CERT_1 = "TmV3IFRlc3QgQ0EgQ2VydAo="
-
-TEST_OLD_REACTIVE_CONFIG = "./tests/unit/test-data/old_config.yaml"
-EXPECTED_OPS_CONFIG = "./tests/unit/test-data/expected_config.yaml"
+# ---------------------------------------------------------------------------
+# Pebble layer / environment mapping
+# ---------------------------------------------------------------------------
 
 
-class MockOutput:
-    """A wrapper class for command output and errors."""
+def test_config_changed_reaches_active_with_expected_env(context, base_state):
+    """arrange: leader unit, secret-storage peer and postgresql relations ready.
+    act: config-changed.
+    assert: charm reaches ActiveStatus and the Pebble plan has the expected LP_* env.
+    """
+    state_out = context.run(context.on.config_changed(), testing.State(**base_state))
 
-    def __init__(self, stdout, stderr):
-        self._stdout = stdout
-        self._stderr = stderr
-
-    def wait_output(self):
-        """Return the stdout and stderr from running the command."""
-        return self._stdout, self._stderr
-
-
-def mock_exec(_, command, environment) -> MockOutput:
-    """Mock Execute the commands."""
-    if len(command) != 1:
-        return MockOutput("", "unexpected number of commands")
-    cmd: str = command[0]
-    if cmd == "/usr/bin/pg_isready":
-        return MockOutput(0, "")
-    if cmd == "/usr/local/bin/livepatch-schema-tool upgrade":
-        return MockOutput("", "")
-    return MockOutput("", "unexpected command")
+    assert state_out.unit_status == testing.ActiveStatus()
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_DATABASE_CONNECTION_STRING"] == MAIN_DSN
+    assert env["LP_SERVER_IS_LEADER"] == "true"
+    assert env["LIVEPATCH_CONFIG_LOCATION"] == "/etc/livepatch.yaml"
+    assert env["LP_SERVER_SERVER_ADDRESS"] == ":8080"
+    # Boolean/False config values are encoded as literal "true"/"false" strings.
+    assert env["LP_SERVER_IS_HOSTED"] == "false"
 
 
-# pylint: disable=too-many-public-methods,too-many-lines
-class TestCharm(unittest.TestCase):
-    """A wrapper class for charm unit tests."""
+def test_missing_postgresql_relation_blocks_without_crashing(context, base_state):
+    """arrange: no `postgresql` relation (only the secret-storage peer).
+    act: config-changed.
+    assert: `is_ready()` reports missing integrations; the charm is blocked, not errored.
+    """
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        relations={testing.PeerRelation("secret-storage", local_app_data={SECRET_STORAGE_KEY: "k"})},
+    )
 
-    def setUp(self):
-        self.harness = Harness(LivepatchCharm)
-        self.addCleanup(self.harness.cleanup)
+    state_out = context.run(context.on.config_changed(), state_in)
 
-        # create version file
-        self.version_file = pathlib.Path("version")
-        pathlib.Path.touch(self.version_file)
-        self.addCleanup(lambda: os.remove(self.version_file))
+    assert isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert "postgresql" in state_out.unit_status.message
 
-        self.harness.disable_hooks()
-        self.harness.add_oci_resource("livepatch-server-image")
-        self.harness.add_oci_resource("livepatch-schema-upgrade-tool-image")
-        self.harness.begin()
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.container_pebble_ready("livepatch")
-        self.harness.container_pebble_ready("livepatch-schema-upgrade")
 
-    def start_container(self):
-        """Setup and start a configured container."""
-        self.harness.charm._state.dsn = "postgresql://123"
-        self.harness.charm._state.resource_token = TEST_TOKEN
+def test_patch_storage_postgres_falls_back_to_main_db(context, base_state):
+    """arrange: patch-storage.type=postgres, no explicit postgres-connection-string.
+    act: config-changed.
+    assert: LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING falls back to the main DB DSN.
+    """
+    state_in = dataclasses.replace(testing.State(**base_state), config={"patch-storage.type": "postgres"})
 
-        container = self.harness.model.unit.get_container("livepatch")
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
+    state_out = context.run(context.on.config_changed(), state_in)
 
-            self.harness.update_config(
-                {
-                    "auth.sso.enabled": True,
-                    "patch-storage.type": "filesystem",
-                    "patch-storage.filesystem-path": "/srv/",
-                    "patch-cache.enabled": True,
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": True,
-                    "contracts.url": "http://contracts.host.name",
-                }
+    assert state_out.unit_status == testing.ActiveStatus()
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"] == MAIN_DSN
+
+
+def test_patch_storage_postgres_respects_explicit_connection_string(context, base_state):
+    """arrange: patch-storage.type=postgres with an explicit connection string.
+    act: config-changed.
+    assert: the explicit connection string is used, not the main DB DSN.
+    """
+    explicit_dsn = "postgresql://custom:pw@custom-host:5432/patches"
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        config={
+            "patch-storage.type": "postgres",
+            "patch-storage.postgres-connection-string": explicit_dsn,
+        },
+    )
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"] == explicit_dsn
+
+
+# ---------------------------------------------------------------------------
+# Legacy (pgsql interface) database relation
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_db_relation_joined_sets_database_name_on_leader(context, base_state, mock_leader_settings):
+    """arrange: leader unit, no modern `postgresql` relation, legacy relation joining.
+    act: database-legacy relation-joined.
+    assert: the event doesn't crash the charm (database name assignment is exercised).
+    """
+    legacy_relation = testing.Relation(endpoint="database-legacy", interface="pgsql")
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        relations={
+            testing.PeerRelation("secret-storage", local_app_data={SECRET_STORAGE_KEY: "k"}),
+            legacy_relation,
+        },
+    )
+
+    with context(context.on.relation_joined(legacy_relation, remote_unit=0), state_in) as manager:
+        manager.run()
+
+
+def test_legacy_db_relation_joined_conflicts_with_modern_relation(context, base_state, mock_leader_settings):
+    """arrange: both `postgresql` and `database-legacy` relations present.
+    act: database-legacy relation-joined.
+    assert: the charm reports BlockedStatus instead of crashing.
+    """
+    legacy_relation = testing.Relation(endpoint="database-legacy", interface="pgsql")
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        relations=set(base_state["relations"]) | {legacy_relation},
+    )
+
+    state_out = context.run(context.on.relation_joined(legacy_relation, remote_unit=0), state_in)
+
+    assert isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert "database-legacy" in state_out.unit_status.message
+
+
+def test_legacy_db_master_changed_stores_secret_and_restarts(context, base_state, mock_leader_settings):
+    """arrange: leader unit with only the legacy database relation, joined then given master data.
+    act: database-legacy relation-joined, then relation-changed with master-changed data.
+    assert: the DSN is stored in the legacy secret, ready to be used as
+        LP_DATABASE_CONNECTION_STRING (the unit stays Blocked because `postgresql` is a
+        non-optional go-framework integration and isn't related in this scenario; see the
+        `is_ready()`-gating note above `restart()`).
+    """
+    peer = testing.PeerRelation("secret-storage", local_app_data={SECRET_STORAGE_KEY: "k"})
+    legacy_relation = testing.Relation(
+        endpoint="database-legacy",
+        interface="pgsql",
+        local_unit_data={"egress-subnets": "192.0.2.0/24"},
+    )
+    joined_state = context.run(
+        context.on.relation_joined(legacy_relation, remote_unit=0),
+        testing.State(leader=True, relations={peer, legacy_relation}),
+    )
+
+    # The legacy `pgsql` interface publishes libpq keyword=value connection strings
+    # (parsed by the `pgconnstr` library), not `postgresql://` URIs.
+    master_uri = "host=legacy-host port=5432 dbname=livepatch-server user=legacy-user password=legacy-pass"
+    # Base the follow-up event on the *post-join* relation (joining writes the
+    # requested database name into this unit's own databag too), not the original
+    # object. "allowed-subnets" must cover our local unit's "egress-subnets" for the
+    # pgsql library to treat the remote data as ready.
+    joined_relation = joined_state.get_relation(legacy_relation.id)
+    legacy_relation_with_master = dataclasses.replace(
+        joined_relation,
+        remote_app_data={
+            "database": "livepatch-server",
+            "master": master_uri,
+            "allowed-units": "canonical-livepatch-server-k8s/0",
+            "allowed-subnets": "192.0.2.0/24",
+        },
+    )
+    state_in = dataclasses.replace(
+        joined_state,
+        relations={peer, legacy_relation_with_master},
+        containers={testing.Container(APP_CONTAINER, can_connect=True)},
+    )
+
+    state_out = context.run(context.on.relation_changed(legacy_relation_with_master), state_in)
+
+    secret = state_out.get_secret(label=LEGACY_DB_SECRET_LABEL)
+    assert secret.tracked_content["dsn"] == "postgresql://legacy-user:legacy-pass@legacy-host:5432/livepatch-server"
+
+
+def test_legacy_db_standby_changed_is_a_noop(context, base_state, mock_leader_settings):
+    """arrange: leader unit with a legacy database relation already joined.
+    act: database-legacy relation-changed with only standby data (no master change).
+    assert: the charm doesn't raise and remains active.
+    """
+    peer = testing.PeerRelation("secret-storage", local_app_data={SECRET_STORAGE_KEY: "k"})
+    legacy_relation = testing.Relation(endpoint="database-legacy", interface="pgsql")
+    joined_state = context.run(
+        context.on.relation_joined(legacy_relation, remote_unit=0),
+        testing.State(leader=True, relations={peer, legacy_relation}),
+    )
+
+    joined_relation = joined_state.get_relation(legacy_relation.id)
+    legacy_relation_with_standby = dataclasses.replace(
+        joined_relation,
+        remote_app_data={
+            "database": "livepatch-server",
+            "standbys": "postgresql://standby-user:standby-pass@standby-host:5432/livepatch-server",
+            "allowed-units": "canonical-livepatch-server-k8s/0",
+        },
+    )
+    state_in = dataclasses.replace(
+        joined_state,
+        relations={peer, legacy_relation_with_standby},
+        containers={testing.Container(APP_CONTAINER, can_connect=True)},
+    )
+
+    state_out = context.run(context.on.relation_changed(legacy_relation_with_standby), state_in)
+
+    assert not state_out.secrets
+
+
+def test_legacy_db_relation_broken_clears_secret_and_restarts(context, base_state):
+    """arrange: leader unit with a legacy DSN already stored in the legacy secret.
+    act: database-legacy relation-broken.
+    assert: the secret is removed and the charm restarts without the legacy DSN.
+    """
+    secret = testing.Secret(
+        tracked_content={"dsn": "postgresql://old-dsn/db"}, label=LEGACY_DB_SECRET_LABEL, owner="app"
+    )
+    legacy_relation = testing.Relation(endpoint="database-legacy", interface="pgsql")
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        secrets={secret},
+        relations=set(base_state["relations"]) | {legacy_relation},
+    )
+
+    state_out = context.run(context.on.relation_broken(legacy_relation), state_in)
+
+    assert not state_out.secrets
+    assert state_out.unit_status == testing.ActiveStatus()
+
+
+def test_legacy_db_relation_broken_non_leader_skips_secret_removal(context, base_state):
+    """arrange: a non-leader unit with a legacy DSN secret it doesn't own.
+    act: database-legacy relation-broken.
+    assert: the secret is left alone (only the leader may remove an app-owned secret).
+    """
+    secret = testing.Secret(
+        tracked_content={"dsn": "postgresql://old-dsn/db"}, label=LEGACY_DB_SECRET_LABEL, owner="app"
+    )
+    legacy_relation = testing.Relation(endpoint="database-legacy", interface="pgsql")
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        leader=False,
+        secrets={secret},
+        relations=set(base_state["relations"]) | {legacy_relation},
+    )
+
+    state_out = context.run(context.on.relation_broken(legacy_relation), state_in)
+
+    assert len(state_out.secrets) == 1
+
+
+def test_legacy_database_connection_string_none_without_relation(context, base_state):
+    """arrange: no legacy relation, no secret.
+    act: call `legacy_database_connection_string()` directly.
+    assert: returns None.
+    """
+    with context(context.on.update_status(), testing.State(**base_state)) as manager:
+        assert manager.charm.legacy_database_connection_string() is None
+        manager.run()
+
+
+# ---------------------------------------------------------------------------
+# CVE catalog / pro-airgapped-server / send-otlp relations
+# ---------------------------------------------------------------------------
+
+
+def test_cve_catalog_sets_env_on_leader(context, base_state):
+    """arrange: leader unit with a cve-catalog relation providing a URL.
+    act: cve-catalog relation-changed.
+    assert: the CVE/LSN sync source URLs are set (leader-only).
+    """
+    relation = testing.Relation(
+        endpoint="cve-catalog", interface="cve-catalog", remote_app_data={"url": "https://cve.example.com"}
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_CVE_SYNC_SOURCE_URL"] == "https://cve.example.com"
+    assert env["LP_LSN_SYNC_SOURCE_URL"] == "https://cve.example.com"
+
+
+def test_cve_catalog_not_set_on_non_leader(context, base_state):
+    """arrange: non-leader unit with a cve-catalog relation providing a URL.
+    act: cve-catalog relation-changed.
+    assert: the CVE/LSN sync source URLs are not set (only the leader publishes them).
+    """
+    relation = testing.Relation(
+        endpoint="cve-catalog", interface="cve-catalog", remote_app_data={"url": "https://cve.example.com"}
+    )
+    state_in = dataclasses.replace(
+        testing.State(**base_state), leader=False, relations=set(base_state["relations"]) | {relation}
+    )
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert "LP_CVE_SYNC_SOURCE_URL" not in env
+
+
+def test_cve_catalog_broken_removes_env(context, base_state):
+    """arrange: leader unit, cve-catalog relation about to be removed.
+    act: cve-catalog relation-broken.
+    assert: the charm restarts without crashing and the sync URLs are absent.
+    """
+    relation = testing.Relation(endpoint="cve-catalog", interface="cve-catalog")
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
+
+    state_out = context.run(context.on.relation_broken(relation), state_in)
+
+    assert state_out.unit_status == testing.ActiveStatus()
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert "LP_CVE_SYNC_SOURCE_URL" not in env
+
+
+def test_pro_airgapped_server_sets_contracts_url_and_disables_sync(context, base_state):
+    """arrange: pro-airgapped-server relation with one unit publishing an address.
+    act: pro-airgapped-server relation-changed.
+    assert: LP_CONTRACTS_URL is set and patch-sync is disabled (no token configured).
+    """
+    relation = testing.Relation(
+        endpoint="pro-airgapped-server",
+        interface="livepatch-pro-airgapped-server",
+        remote_units_data={0: {"hostname": "airgapped.internal", "scheme": "https", "port": "8443"}},
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_CONTRACTS_ENABLED"] == "true"
+    assert env["LP_CONTRACTS_URL"] == "https://airgapped.internal:8443"
+    assert env["LP_PATCH_SYNC_ENABLED"] == "false"
+
+
+def test_pro_airgapped_server_multiple_units_prefers_first_with_data(context, base_state):
+    """arrange: two related units; the alphabetically-first has no hostname yet.
+    act: pro-airgapped-server relation-changed.
+    assert: the charm falls back to the next unit that does publish a hostname.
+    """
+    relation = testing.Relation(
+        endpoint="pro-airgapped-server",
+        interface="livepatch-pro-airgapped-server",
+        remote_units_data={
+            0: {},
+            1: {"hostname": "airgapped-1.internal", "scheme": "http", "port": ""},
+        },
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_CONTRACTS_URL"] == "http://airgapped-1.internal"
+
+
+def test_pro_airgapped_server_relation_removed_falls_back_to_resource_token(context, base_state):
+    """arrange: leader unit, a stored resource token, no airgapped relation.
+    act: config-changed.
+    assert: LP_CONTRACTS_ENABLED is absent and LP_PATCH_SYNC_TOKEN uses the resource token.
+    """
+    secret = testing.Secret(tracked_content={"token": "stored-resource-token"}, label=RESOURCE_TOKEN_SECRET_LABEL)
+    state_in = dataclasses.replace(testing.State(**base_state), secrets={secret})
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert "LP_CONTRACTS_ENABLED" not in env
+    assert env["LP_PATCH_SYNC_TOKEN"] == "stored-resource-token"
+
+
+def test_send_otlp_relation_sets_metrics_endpoint(context, base_state):
+    """arrange: leader unit with a send-otlp relation providing an OTLP endpoint.
+    act: send-otlp relation-changed.
+    assert: the LP_OTEL_METRICS_* env vars reflect the relation data.
+    """
+    relation = testing.Relation(
+        endpoint="send-otlp",
+        interface="otlp",
+        remote_app_data={"endpoint": "otel-collector:4317", "protocol": "grpc", "insecure": "false"},
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_OTEL_METRICS_OTLP_ENDPOINT"] == "otel-collector:4317"
+    assert env["LP_OTEL_METRICS_PROTOCOL"] == "grpc"
+    assert env["LP_OTEL_METRICS_INSECURE"] == "false"
+
+
+# ---------------------------------------------------------------------------
+# Ingress method switching
+# ---------------------------------------------------------------------------
+
+
+def test_ingress_defaults_to_legacy_nginx_route(context, base_state):
+    """arrange: default config (ingress-interface defaults to legacy-nginx-route).
+    act: config-changed.
+    assert: the charm records that legacy-nginx-route was configured.
+    """
+    with context(context.on.config_changed(), testing.State(**base_state)) as manager:
+        manager.run()
+        assert manager.charm._configured_ingress == "legacy-nginx-route"
+
+
+def test_ingress_non_legacy_value_does_not_configure_nginx_route(context, base_state):
+    """arrange: ingress-interface set to something other than legacy-nginx-route.
+    act: config-changed.
+    assert: `_update_ingress_method` leaves `_configured_ingress` unset.
+    """
+    state_in = dataclasses.replace(testing.State(**base_state), config={"ingress-interface": "ingress"})
+
+    with context(context.on.config_changed(), state_in) as manager:
+        manager.run()
+        assert manager.charm._configured_ingress is None
+
+
+# ---------------------------------------------------------------------------
+# Trusted CA certificate update
+# ---------------------------------------------------------------------------
+
+
+def test_ca_cert_pushed_and_trust_store_refreshed(context, base_state):
+    """arrange: contracts.ca set to a valid base64-encoded certificate.
+    act: config-changed.
+    assert: the decoded cert is pushed to the container and update-ca-certificates runs.
+    """
+    import base64
+
+    cert_pem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----\n"
+    container = testing.Container(
+        APP_CONTAINER,
+        can_connect=True,
+        _base_plan=DEFAULT_LAYER,
+        execs={testing.Exec(["update-ca-certificates", "--fresh"], return_code=0)},
+    )
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        config={"contracts.ca": base64.b64encode(cert_pem.encode()).decode()},
+        containers={container},
+    )
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    fs = state_out.get_container(APP_CONTAINER).get_filesystem(context)
+    pushed = fs / "usr/local/share/ca-certificates/trusted-contracts.ca.crt"
+    assert pushed.read_text() == cert_pem
+    assert state_out.unit_status == testing.ActiveStatus()
+
+
+def test_ca_cert_malformed_base64_is_logged_and_skipped(context, base_state):
+    """arrange: contracts.ca set to a value that isn't valid base64.
+    act: config-changed.
+    assert: the charm logs the problem and continues (doesn't crash or block).
+    """
+    state_in = dataclasses.replace(testing.State(**base_state), config={"contracts.ca": "not valid base64!!"})
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    assert state_out.unit_status == testing.ActiveStatus()
+    assert any("failed to parse base64" in log.message for log in context.juju_log)
+
+
+def test_ca_cert_update_exec_failure_does_not_block_restart(context, base_state):
+    """arrange: contracts.ca set, but `update-ca-certificates` isn't a known command.
+    act: config-changed.
+    assert: the exec failure is logged but the charm still reaches ActiveStatus.
+    """
+    import base64
+
+    container = testing.Container(
+        APP_CONTAINER, can_connect=True, _base_plan=DEFAULT_LAYER
+    )  # no matching Exec registered
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        config={"contracts.ca": base64.b64encode(b"cert-data").decode()},
+        containers={container},
+    )
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    assert state_out.unit_status == testing.ActiveStatus()
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+
+def test_restart_action_restarts_and_reports_result(context, base_state):
+    """arrange: a ready unit.
+    act: restart action.
+    assert: the workload restarts and the action reports success.
+    """
+    state_out = context.run(context.on.action("restart"), testing.State(**base_state))
+
+    assert context.action_results == {"result": "restarted"}
+    assert state_out.unit_status == testing.ActiveStatus()
+
+
+def test_schema_version_action_reports_pending_by_default(context, base_state):
+    """arrange: a ready unit with no migration status file yet.
+    act: schema-version action.
+    assert: the action reports the PENDING status.
+    """
+    context.run(context.on.action("schema-version"), testing.State(**base_state))
+
+    assert context.action_results == {"status": "PENDING"}
+
+
+def test_schema_upgrade_action_success(context, base_state, schema_tool_container):
+    """arrange: a ready unit with the schema tool present in the workload container.
+    act: schema-upgrade action.
+    assert: the schema tool is run once against the main database, and succeeds.
+    """
+    container = dataclasses.replace(
+        schema_tool_container,
+        execs={testing.Exec([SCHEMA_TOOL_PATH, "upgrade", "--db", MAIN_DSN, "--target", "livepatchdb"], return_code=0)},
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), containers={container})
+
+    context.run(context.on.action("schema-upgrade"), state_in)
+
+    assert context.action_results == {"result": "schema migration completed"}
+
+
+def test_schema_upgrade_action_includes_metrics_target_when_related(context, base_state, schema_tool_container):
+    """arrange: a ready unit with the metrics-db relation also present.
+    act: schema-upgrade action.
+    assert: the schema tool runs for both the main and the timescale targets.
+    """
+    container = dataclasses.replace(
+        schema_tool_container,
+        execs={
+            testing.Exec([SCHEMA_TOOL_PATH, "upgrade", "--db", MAIN_DSN, "--target", "livepatchdb"], return_code=0),
+            testing.Exec(
+                [SCHEMA_TOOL_PATH, "upgrade", "--db", METRICS_DSN, "--target", "timescaledb"], return_code=0
+            ),
+        },
+    )
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        containers={container},
+        relations=set(base_state["relations"]) | {metrics_db_relation()},
+    )
+
+    context.run(context.on.action("schema-upgrade"), state_in)
+
+    assert context.action_results == {"result": "schema migration completed"}
+
+
+def test_schema_upgrade_action_fails_when_tool_missing(context, base_state):
+    """arrange: a ready unit whose container doesn't have the schema tool.
+    act: schema-upgrade action.
+    assert: the action fails with a clear, sanitized message.
+    """
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("schema-upgrade"), testing.State(**base_state))
+
+    assert "schema tool not found" in exc_info.value.message
+
+
+def test_schema_upgrade_action_fails_when_cannot_connect(context, base_state):
+    """arrange: a ready unit whose container can't be reached.
+    act: schema-upgrade action.
+    assert: the action fails without leaking exec details.
+    """
+    state_in = dataclasses.replace(
+        testing.State(**base_state), containers={testing.Container(APP_CONTAINER, can_connect=False)}
+    )
+
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("schema-upgrade"), state_in)
+
+    assert "cannot connect" in exc_info.value.message
+
+
+def test_schema_upgrade_action_fails_without_database_connection(context, schema_tool_container):
+    """arrange: no postgresql relation and no legacy DSN secret.
+    act: schema-upgrade action.
+    assert: the action fails because no database connection is configured.
+    """
+    state_in = testing.State(
+        leader=True,
+        relations={testing.PeerRelation("secret-storage", local_app_data={SECRET_STORAGE_KEY: "k"})},
+        containers={schema_tool_container},
+    )
+
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("schema-upgrade"), state_in)
+
+    assert "database connection not set" in exc_info.value.message
+
+
+def test_schema_upgrade_action_reports_sanitized_failure(context, base_state, schema_tool_container):
+    """arrange: the schema tool exits non-zero for the main database.
+    act: schema-upgrade action.
+    assert: the action fails without leaking the DSN (which is passed via argv).
+    """
+    container = dataclasses.replace(
+        schema_tool_container,
+        execs={
+            testing.Exec(
+                [SCHEMA_TOOL_PATH, "upgrade", "--db", MAIN_DSN, "--target", "livepatchdb"],
+                return_code=1,
+                stderr="connection refused",
             )
-            self.harness.charm.on.config_changed.emit()
+        },
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), containers={container})
 
-            # Emit the pebble-ready event for livepatch
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("schema-upgrade"), state_in)
 
-        # Check the that the plan was updated
-        plan = self.harness.get_container_pebble_plan("livepatch")
-        required_environment = {
-            "LP_AUTH_SSO_ENABLED": True,
-            "LP_PATCH_STORAGE_TYPE": "filesystem",
-            "LP_PATCH_STORAGE_FILESYSTEM_PATH": "/srv/",
-            "LP_PATCH_CACHE_ENABLED": True,
-            "LP_DATABASE_CONNECTION_STRING": "postgresql://123",
-            "LP_CONTRACTS_URL": "http://contracts.host.name",
-        }
-        environment = plan.to_dict()["services"]["livepatch"]["environment"]
-        self.assertEqual(environment, environment | required_environment)
+    assert "livepatchdb" in exc_info.value.message
+    assert MAIN_DSN not in exc_info.value.message
+    assert "test-password" not in exc_info.value.message
 
-    def test_start_container(self):
-        """A test for config changed hook."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
 
-        # This should work without an exception.
-        self.start_container()
+def test_get_resource_token_action_success(context, base_state, monkeypatch):
+    """arrange: a leader unit with a contract token and no conflicting config.
+    act: get-resource-token action.
+    assert: the resource token is fetched, stored in a secret, and the workload restarts.
+    """
+    monkeypatch.setattr("charm.get_machine_token", lambda *a, **k: "machine-token")
+    monkeypatch.setattr("charm.get_resource_token", lambda *a, **k: "resource-token")
 
-    def test_on_start(self):
-        """Test on-start event handler."""
-        self.start_container()
+    state_out = context.run(
+        context.on.action("get-resource-token", params={"contract-token": "contract-token"}),
+        testing.State(**base_state),
+    )
 
-        self.harness.charm.on.start.emit()
+    assert context.action_results == {"result": "resource token set"}
+    secret = state_out.get_secret(label=RESOURCE_TOKEN_SECRET_LABEL)
+    assert secret.tracked_content["token"] == "resource-token"
 
-        self.assertEqual(self.harness.charm.unit.status.name, ActiveStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "")
 
-    def test_on_stop(self):
-        """Test on-stop event handler."""
-        self.start_container()
+def test_get_resource_token_action_fails_for_non_leader(context, base_state):
+    """arrange: a non-leader unit.
+    act: get-resource-token action.
+    assert: the action fails immediately.
+    """
+    state_in = dataclasses.replace(testing.State(**base_state), leader=False)
 
-        self.harness.charm.on.stop.emit()
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("get-resource-token", params={"contract-token": "t"}), state_in)
 
-        self.assertEqual(self.harness.charm.unit.status.name, WaitingStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "service stopped")
+    assert "not the leader" in exc_info.value.message
 
-    def test_on_update_status(self):
-        """Test on-update-status event handler."""
-        self.start_container()
 
-        self.harness.charm.on.update_status.emit()
+def test_get_resource_token_action_fails_when_sync_token_already_set(context, base_state):
+    """arrange: patch-sync.token is already configured.
+    act: get-resource-token action.
+    assert: the action fails to avoid clobbering the configured token.
+    """
+    state_in = dataclasses.replace(testing.State(**base_state), config={"patch-sync.token": "existing-token"})
 
-        self.assertEqual(self.harness.charm.unit.status.name, ActiveStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "")
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("get-resource-token", params={"contract-token": "t"}), state_in)
 
-    def test_restart_action__success(self):
-        """Test the scenario where `restart` action finished successfully."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
+    assert "already set" in exc_info.value.message
 
-        self.start_container()
 
-        self.harness.run_action("restart")
+def test_get_resource_token_action_fails_when_airgapped_related(context, base_state):
+    """arrange: a pro-airgapped-server relation is already established.
+    act: get-resource-token action.
+    assert: the action fails since the two integrations are mutually exclusive.
+    """
+    relation = testing.Relation(
+        endpoint="pro-airgapped-server",
+        interface="livepatch-pro-airgapped-server",
+        remote_units_data={0: {"hostname": "airgapped.internal"}},
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
 
-        self.assertEqual(self.harness.charm.unit.status.name, ActiveStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "")
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("get-resource-token", params={"contract-token": "t"}), state_in)
 
-    def test_container_config(self):
-        """Test specific config values match what is expected."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-        self.harness.update_config({"patch-sync.sync-tiers": True})
+    assert "pro-airgapped-server" in exc_info.value.message
 
-        self.start_container()
 
-        self._assert_environment_contains({"LP_PATCH_SYNC_SYNC_TIERS": True})
+def test_get_resource_token_action_fails_on_empty_token(context, base_state):
+    """arrange: a leader unit.
+    act: get-resource-token action with an empty contract token.
+    assert: the action fails without attempting the HTTP exchange.
+    """
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(context.on.action("get-resource-token", params={"contract-token": ""}), testing.State(**base_state))
 
-    def test_sync_token_set(self):
-        """Test specific config values match what is expected."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-        self.harness.update_config({"patch-sync.token": "AAAABBBB"})
+    assert "no contract token provided" in exc_info.value.message
 
-        self.start_container()
 
-        self._assert_environment_contains({"LP_PATCH_SYNC_TOKEN": "AAAABBBB"})  # nosec
+def test_get_resource_token_action_fails_when_machine_token_fetch_fails(context, base_state, monkeypatch):
+    """arrange: the contracts service doesn't return a machine token.
+    act: get-resource-token action.
+    assert: the action fails with a clear message.
+    """
+    monkeypatch.setattr("charm.get_machine_token", lambda *a, **k: None)
 
-    def test_schema_upgrade_action__success(self):
-        """Test the scenario where `schema-upgrade` action finishes successfully."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        schema_upgrade_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-
-        def container_exists_side_effect(path: str) -> bool:
-            if path == "/usr/local/bin/livepatch-schema-tool":
-                return True
-            return False
-
-        schema_upgrade_container.exists = Mock(side_effect=container_exists_side_effect)
-
-        def container_exec_side_effect(command: List[str]):
-            self.assertEqual(
-                command,
-                [
-                    "/usr/local/bin/livepatch-schema-tool",
-                    "upgrade",
-                    "--db",
-                    "postgresql://123",
-                ],
-            )
-            process_mock = Mock()
-            process_mock.wait_output.side_effect = lambda: (None, None)
-            return process_mock
-
-        schema_upgrade_container.exec = Mock(side_effect=container_exec_side_effect)
-
-        self.harness.run_action("schema-upgrade")
-
-        self.assertEqual(self.harness.charm.unit.status.name, WaitingStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "Schema migration done")
-
-    def test_schema_upgrade_action__failure(self):
-        """Test the scenario where `schema-upgrade` action fails."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        schema_upgrade_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-
-        def container_exists_side_effect(path: str) -> bool:
-            if path == "/usr/local/bin/livepatch-schema-tool":
-                return True
-            return False
-
-        schema_upgrade_container.exists = Mock(side_effect=container_exists_side_effect)
-
-        def container_exec_side_effect(command: List[str]):
-            self.assertEqual(
-                command,
-                [
-                    "/usr/local/bin/livepatch-schema-tool",
-                    "upgrade",
-                    "--db",
-                    "postgresql://123",
-                ],
-            )
-
-            def throw():
-                raise pebble.ExecError(["/usr/local/bin/livepatch-schema-tool"], 1, "", "some error")
-
-            process_mock = Mock()
-            process_mock.wait_output.side_effect = throw
-            return process_mock
-
-        schema_upgrade_container.exec = Mock(side_effect=container_exec_side_effect)
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("schema-upgrade")
-
-        self.assertEqual(
-            ex.exception.message,
-            "schema migration failed for primary database: non-zero exit code 1 executing '/usr/local/bin/livepatch-schema-tool', stdout='', stderr='some error'",
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(
+            context.on.action("get-resource-token", params={"contract-token": "t"}), testing.State(**base_state)
         )
 
+    assert "failed to fetch the machine token" in exc_info.value.message
 
-    def test_on_config_changed__failure__cannot_connect_to_schema_upgrade_container(self):
-        """
-        Test the scenario where `on-config-changed` event handler fails due to
-        failure to connect to schema-upgrade container.
-        """
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
 
-        self.start_container()
+def test_emit_updated_config_action_success(context, base_state):
+    """arrange: a leader unit.
+    act: emit-updated-config action with the old reactive charm's exported config.
+    assert: the converted config maps the expected keys/values.
+    """
+    import pathlib
 
-        schema_upgrade_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-        schema_upgrade_container.can_connect = lambda: False
+    import yaml
 
-        self.harness.charm.on.config_changed.emit()
+    test_data = pathlib.Path(__file__).parent / "test-data"
+    old_config = (test_data / "old_config.yaml").read_text()
+    expected = yaml.safe_load((test_data / "expected_config.yaml").read_text())
 
-        self.assertEqual(self.harness.charm.unit.status.name, WaitingStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "Waiting to connect - schema container.")
+    context.run(
+        context.on.action("emit-updated-config", params={"config-file": old_config}),
+        testing.State(**base_state),
+    )
 
-    def test_on_config_changed__failure__dsn_not_set(self):
-        """
-        Test the scenario where `on-config-changed` event handler fails due to
-        unassigned DSN.
-        """
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
+    result = context.action_results["result"]
+    new_config = yaml.safe_load(result["new-config"])
+    assert new_config == expected
 
-        self.start_container()
 
-        self.harness.charm._state.dsn = ""
-
-        self.harness.charm.on.config_changed.emit()
-
-        self.assertEqual(self.harness.charm.unit.status.name, BlockedStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "Waiting for postgres relation to be established.")
-
-    def test_on_config_changed__failure__state_not_ready(self):
-        """
-        Test the scenario where `on-config-changed` event handler fails due to
-        `state` not being ready.
-        """
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        self.harness.charm._state = State("foo", lambda: None)
-
-        self.harness.charm.on.config_changed.emit()
-
-        # Note that in this case, nothing should happen, including no exception.
-        # Also, since the state of the unit is not changed, there's nothing to
-        # assert against.
-
-    def test_schema_version_action__success(self):
-        """Test the scenario where `schema-version` action finishes successfully."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        schema_upgrade_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-
-        def container_exists_side_effect(path: str) -> bool:
-            if path == "/usr/local/bin/livepatch-schema-tool":
-                return True
-            return False
-
-        schema_upgrade_container.exists = Mock(side_effect=container_exists_side_effect)
-
-        def container_exec_side_effect(command: List[str]):
-            self.assertEqual(
-                command,
-                [
-                    "/usr/local/bin/livepatch-schema-tool",
-                    "check",
-                    "--db",
-                    "postgresql://123",
-                ],
-            )
-            process_mock = Mock()
-            process_mock.wait_output.side_effect = lambda: (None, None)
-            return process_mock
-
-        schema_upgrade_container.exec = Mock(side_effect=container_exec_side_effect)
-
-        output = self.harness.run_action("schema-version")
-
-        self.assertEqual(output.results, {"migration-required": False})
-
-    def test_schema_version_action__success__migration_required(self):
-        """
-        Test the scenario where `schema-version` action finishes successfully
-        while database migration is still required.
-        """
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        schema_upgrade_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-
-        def container_exists_side_effect(path: str) -> bool:
-            if path == "/usr/local/bin/livepatch-schema-tool":
-                return True
-            return False
-
-        schema_upgrade_container.exists = Mock(side_effect=container_exists_side_effect)
-
-        def container_exec_side_effect(command: List[str]):
-            self.assertEqual(
-                command,
-                [
-                    "/usr/local/bin/livepatch-schema-tool",
-                    "check",
-                    "--db",
-                    "postgresql://123",
-                ],
-            )
-
-            def throw():
-                raise pebble.ExecError([], 2, "", "exit code of 2 means migration is required")
-
-            process_mock = Mock()
-            process_mock.wait_output.side_effect = throw
-            return process_mock
-
-        schema_upgrade_container.exec = Mock(side_effect=container_exec_side_effect)
-
-        output = self.harness.run_action("schema-version")
-
-        self.assertEqual(output.results, {"migration-required": True})
-
-    def test_schema_version_action__failure(self):
-        """Test the scenario where `schema-version` action fails."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        schema_upgrade_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-
-        def container_exists_side_effect(path: str) -> bool:
-            if path == "/usr/local/bin/livepatch-schema-tool":
-                return True
-            return False
-
-        schema_upgrade_container.exists = Mock(side_effect=container_exists_side_effect)
-
-        def container_exec_side_effect(command: List[str]):
-            self.assertEqual(
-                command,
-                [
-                    "/usr/local/bin/livepatch-schema-tool",
-                    "check",
-                    "--db",
-                    "postgresql://123",
-                ],
-            )
-
-            def throw():
-                raise pebble.ExecError(["/usr/local/bin/livepatch-schema-tool"], 1, "", "some error")
-
-            process_mock = Mock()
-            process_mock.wait_output.side_effect = throw
-            return process_mock
-
-        schema_upgrade_container.exec = Mock(side_effect=container_exec_side_effect)
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("schema-version")
-
-        self.assertEqual(
-            ex.exception.message,
-            "schema version check failed: non-zero exit code 1 executing '/usr/local/bin/livepatch-schema-tool', stdout='', stderr='some error'",
+def test_emit_updated_config_action_fails_on_invalid_yaml(context, base_state):
+    """arrange: a leader unit.
+    act: emit-updated-config action with unparsable YAML.
+    assert: the action fails with a clear message.
+    """
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(
+            context.on.action("emit-updated-config", params={"config-file": "not: valid: yaml: :"}),
+            testing.State(**base_state),
         )
 
-    def test_get_resource_token_action__success(self):
-        """Test the scenario where `get-resource-token` action finishes successfully."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
+    assert "Failed to parse YAML" in exc_info.value.message
 
-        self.start_container()
-        del self.harness.charm._state.resource_token
-        contracts_url = self.harness.charm.config.get("contracts.url")
 
-        def make_request_side_effect(method: str, url: str, *args, **kwargs):
-            if method == "POST":
-                self.assertEqual(url, f"{contracts_url}/v1/context/machines/token")
-                return {"machineToken": "some-machine-token"}
-            if method == "GET":
-                self.assertEqual(
-                    url, f"{contracts_url}/v1/resources/livepatch-onprem/context/machines/livepatch-onprem"
-                )
-                return {"resourceToken": "some-resource-token"}
-            raise AssertionError("unexpected request")
-
-        with patch("livepatch_common.contracts.make_request", Mock(side_effect=make_request_side_effect)):
-            output = self.harness.run_action("get-resource-token", {"contract-token": "some-token"})
-
-        self.assertEqual(self.harness.charm._state.resource_token, "some-resource-token")
-        self.assertEqual(output.results, {"result": "resource token set"})
-
-    def test_emit_updated_config__failure_bad_format(self):
-        """Test the scenario where `emit-updated-config` action fails due to bad yaml formatting."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-        self.start_container()
-
-        old_config = "invalid"
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("emit-updated-config", {"config-file": old_config})
-
-        self.assertEqual(ex.exception.message, "invalid config file format. Got content invalid")
-
-    def test_emit_updated_config__failure_missing_value(self):
-        """Test the scenario where `emit-updated-config` action fails."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-        self.start_container()
-
-        old_config = """application: canonical-livepatch-server
-application-config:
-  trust:
-    default: false
-    description: Does this application have access to trusted credentials
-    source: default
-    type: bool
-    value: false
-charm: canonical-livepatch-server
-settings:
-  auth_basic_users:
-    default: ""
-    description: Comma-separated list of <user>:<bcrypt password hash> pairs.
-    source: default
-    type: string
-    value:"""
-
-        with self.assertRaises(ActionFailed) as ex:
-            self.harness.run_action("emit-updated-config", {"config-file": old_config})
-
-        self.assertEqual(
-            ex.exception.message,
-            "Failed to map old config to new config: auth_basic_users doesn't have a set value for it",
+def test_emit_updated_config_action_fails_on_non_dict_yaml(context, base_state):
+    """arrange: a leader unit.
+    act: emit-updated-config action with valid YAML that isn't a mapping.
+    assert: the action fails with a clear message.
+    """
+    with pytest.raises(testing.ActionFailed) as exc_info:
+        context.run(
+            context.on.action("emit-updated-config", params={"config-file": "- just\n- a\n- list\n"}),
+            testing.State(**base_state),
         )
 
-    def test_emit_updated_config__success(self):
-        """Test the scenario where `emit-updated-config` action finishes successfully."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-        self.maxDiff = None
-        self.start_container()
+    assert "invalid config file format" in exc_info.value.message
 
-        old_config = ""
-        new_config = ""
 
-        with open(TEST_OLD_REACTIVE_CONFIG, "r") as f:
-            old_config = f.read().strip()
-
-        with open(EXPECTED_OPS_CONFIG, "r") as f:
-            new_config = f.read().strip()
-
-        output = self.harness.run_action("emit-updated-config", {"config-file": old_config})
-
-        expected_dict = {
-            "new-config": new_config,
-            "removed-keys": ["psql_dbname", "psql_roles"],
-            "unrecognized-keys": ["filestore_path", "nagios_context", "nagios_servicegroups", "port"],
-        }
-
-        self.assertEqual(output.results, {"result": expected_dict})
-
-    def test_get_resource_token_action__failure__non_leader_unit(self):
-        """Test the scenario where `get-resource-token` action fails because unit is not leader."""
-        self.harness.enable_hooks()
-
-        self.start_container()
-        del self.harness.charm._state.resource_token
-
-        output = self.harness.run_action("get-resource-token", {"contract-token": "some-token"})
-
-        self.assertEqual(output.results, {"error": "cannot fetch the resource token: unit is not the leader"})
-
-    def test_get_resource_token_action__failure__empty_contract_token(self):
-        """Test the scenario where `get-resource-token` action fails because contract token is empty."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-        del self.harness.charm._state.resource_token
-
-        output = self.harness.run_action("get-resource-token", {"contract-token": ""})
-
-        self.assertEqual(output.results, {"error": "cannot fetch the resource token: no contract token provided"})
-
-    def test_get_resource_token_action__failure__sync_token_already_set(self):
-        """Test the scenario where `get-resource-token` action fails because sync token is already set."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-        del self.harness.charm._state.resource_token
-        self.harness.update_config({"patch-sync.token": "AAAABBBB"})
-
-        output = self.harness.run_action("get-resource-token", {"contract-token": "some-token"})
-
-        self.assertEqual(
-            output.results,
-            {"error": "patch-sync.token is already set. It should be unset before setting a resource token"},
-        )
-
-    def test_missing_url_template_config_causes_blocked_state(self):
-        """A test for missing url template."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-        self.harness.charm._state.resource_token = TEST_TOKEN
-
-        container = self.harness.model.unit.get_container("livepatch")
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-            self.harness.update_config(
-                {
-                    "auth.sso.enabled": True,
-                    "patch-storage.type": "filesystem",
-                    "patch-storage.filesystem-path": "/srv/",
-                    "patch-cache.enabled": True,
-                    "server.is-hosted": True,
-                }
-            )
-            self.harness.charm.on.config_changed.emit()
-
-            # Emit the pebble-ready event for livepatch
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        # Check the that the plan was updated
-        plan = self.harness.get_container_pebble_plan("livepatch")
-        self.assertEqual(plan.to_dict(), {})
-        self.assertEqual(self.harness.charm.unit.status.name, BlockedStatus.name)
-        self.assertEqual(self.harness.charm.unit.status.message, "✘ server.url-template config not set")
-
-    def test_sync_token_enough_active_state(self):
-        """For on-prem servers, a sync token and url template should be enough for active state."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        container = self.harness.model.unit.get_container("livepatch")
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-            self.harness.update_config(
-                {
-                    "auth.sso.enabled": True,
-                    "patch-storage.type": "filesystem",
-                    "patch-storage.filesystem-path": "/srv/",
-                    "patch-cache.enabled": True,
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                    "patch-sync.token": "test-token",
-                }
-            )
-            self.harness.charm.on.config_changed.emit()
-
-            # Emit the pebble-ready event for livepatch
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        # Check the that the plan was updated
-        self.assertEqual(self.harness.charm.unit.status.name, ActiveStatus.name)
-
-    def test_missing_sync_token_causes_blocked_state(self):
-        """For on-prem servers, a missing sync token should cause a blocked state."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-        # self.harness.charm._state.resource_token = ""
-
-        container = self.harness.model.unit.get_container("livepatch")
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-            self.harness.update_config(
-                {
-                    "auth.sso.enabled": True,
-                    "patch-storage.type": "filesystem",
-                    "patch-storage.filesystem-path": "/srv/",
-                    "patch-cache.enabled": True,
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-            self.harness.charm.on.config_changed.emit()
-
-            # Emit the pebble-ready event for livepatch
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        # Check the that the plan was updated
-        plan = self.harness.get_container_pebble_plan("livepatch")
-        self.assertEqual(plan.to_dict(), {})
-        self.assertEqual(self.harness.charm.unit.status.name, BlockedStatus.name)
-        self.assertEqual(
-            self.harness.charm.unit.status.message, "✘ patch-sync token not set, run get-resource-token action"
-        )
-
-    def test_config_ca_cert(self):
-        """Assure the contract.ca is pushed to the workload container."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.start_container()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        container = self.harness.model.unit.get_container("livepatch")
-        self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        self.harness.handle_exec("livepatch", [], result=0)
-        self.harness.update_config(
-            {
-                "contracts.ca": TEST_CA_CERT,
-            }
-        )
-        self.harness.charm.on.config_changed.emit()
-
-        # Emit the pebble-ready event for livepatch
-        self.harness.charm.on.livepatch_pebble_ready.emit(container)
-        # Ensure that the content looks sensible
-        root = self.harness.get_filesystem_root("livepatch")
-        cert = (root / "usr/local/share/ca-certificates/trusted-contracts.ca.crt").read_text()
-        self.assertEqual(cert, "Test CA Cert\n")
-
-        self.harness.update_config(
-            {
-                "contracts.ca": TEST_CA_CERT_1,
-            }
-        )
-        self.harness.charm.on.config_changed.emit()
-
-        # Emit the pebble-ready event for livepatch
-        self.harness.charm.on.livepatch_pebble_ready.emit(container)
-        # Ensure that the content looks sensible
-        root = self.harness.get_filesystem_root("livepatch")
-        cert = (root / "usr/local/share/ca-certificates/trusted-contracts.ca.crt").read_text()
-        self.assertEqual(cert, "New Test CA Cert\n")
-
-    def test_logrotate_config_pushed(self):
-        """Assure that logrotate config is pushed."""
-        self.harness.enable_hooks()
-
-        # Trigger config-changed so that logrotate config gets written
-        self.harness.charm.on.config_changed.emit()
-
-        # Ensure that the content looks sensible
-        root = self.harness.get_filesystem_root("livepatch")
-        config = (root / "etc/logrotate.d/livepatch").read_text()
-        self.assertIn("/var/log/livepatch {", config)
-
-    # wokeignore:rule=master
-    def test_legacy_db_master_changed(self):
-        """test `_legacy_db_master_changed event` handler."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        with patch("subprocess.check_call", check_call_mock):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", check_output_mock):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch-server",
-                        # wokeignore:rule=master
-                        "master": "host=host port=5432 dbname=livepatch-server user=username password=password",
-                    },
-                )
-
-                self.assertEqual(
-                    self.harness.charm._state.dsn, "postgresql://username:password@host:5432/livepatch-server"
-                )
-
-    def test_legacy_db_standby_changed(self):
-        """test `_legacy_db_standby_changed event` handler."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        with patch("subprocess.check_call", check_call_mock):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", check_output_mock):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch-server",
-                        "standbys": "host=standby-host port=5432 dbname=livepatch-server user=username password=password",
-                    },
-                )
-
-        # Since we're not storing standby instances in the state, there's nothing
-        # to assert against here. However, the event and relation data should be
-        # handled without any exceptions. So, for now, it suffices for the test
-        # to complete without any exceptions.
-
-    # wokeignore:rule=master
-    def test_legacy_db_relation__both_master_and_standby(self):
-        """test legacy db relation handlers' function when both primary and standby units are provided."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        with patch("subprocess.check_call", check_call_mock):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", check_output_mock):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch-server",
-                        # wokeignore:rule=master
-                        "master": "host=host port=5432 dbname=livepatch-server user=username password=password",
-                    },
-                )
-
-                self.assertEqual(
-                    self.harness.charm._state.dsn, "postgresql://username:password@host:5432/livepatch-server"
-                )
-
-                self.harness.update_relation_data(
-                    legacy_db_rel_id,
-                    "postgres/0",
-                    {
-                        "database": "livepatch-server",
-                        # wokeignore:rule=master
-                        "master": "host=host port=5432 dbname=livepatch-server user=username password=password",
-                        "standbys": "host=standby-host port=5432 dbname=livepatch-server user=username password=password",
-                    },
-                )
-
-                self.assertEqual(
-                    self.harness.charm._state.dsn, "postgresql://username:password@host:5432/livepatch-server"
-                )
-
-                # As mentioned in the other tests, we're not storing standby instances
-                # in the state, so there's nothing to assert against for standbys.
-                # However, it's important for this event to be handled without any
-                # exceptions.
-
-    def test_database_relations_are_mutually_exclusive__legacy_first(self):
-        """Assure that database relations are mutually exclusive."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a
-        # subprocess.
-        with patch("subprocess.check_call", return_value=None):  # Stubs `leader-set` call.
-            with patch("subprocess.check_output", return_value=b""):  # Stubs `leader-get` call.
-                self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-        self.harness.update_relation_data(legacy_db_rel_id, "postgres", {})
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        with self.assertRaises(Exception) as cm:
-            self.harness.update_relation_data(
-                db_rel_id,
-                "postgres-new",
-                {
-                    "username": "some-username",
-                    "password": "some-password",  # nosec
-                    "endpoints": "some.database.host,some.other.database.host",
-                },
-            )
-        self.assertEqual(
-            str(cm.exception),
-            "Integration with both database relations is not allowed; `database-legacy` is already activated.",
-        )
-
-    def test_database_relations_are_mutually_exclusive__standard_first(self):
-        """Assure that database relations are mutually exclusive."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",  # nosec
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        legacy_db_rel_id = self.harness.add_relation("database-legacy", "postgres")
-
-        with self.assertRaises(Exception) as cm:
-            # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-            # from juju help-tools, so we need to mock calls that try to spawn a
-            # subprocess.
-            with patch("subprocess.check_call", return_value=None):  # Stubs `leader-set` call.
-                with patch("subprocess.check_output", return_value=b""):  # Stubs `leader-get` call.
-                    self.harness.add_relation_unit(legacy_db_rel_id, "postgres/0")
-
-        self.assertEqual(
-            str(cm.exception),
-            "Integration with both database relations is not allowed; `database` is already activated.",
-        )
-
-    def test_standard_database_relation__success(self):
-        """Test standard db relation successfully integrates with database."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "some-username",
-                "password": "some-password",  # nosec
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        self.assertEqual(
-            self.harness.charm._state.dsn,
-            "postgresql://some-username:some-password@some.database.host/livepatch-server",
-        )
-
-    def test_standard_database_relation__empty_username_or_password(self):
-        """Test standard db relation does not update the dsn if credentials are not set in relation data."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "",
-                "password": "",  # nosec
-                "endpoints": "some.database.host,some.other.database.host",
-            },
-        )
-
-        # We should verify at this point the db_uri is not set in the state, as
-        # this is perceived as an incomplete integration.
-        self.assertIsNone(self.harness.charm._state.dsn)
-
-    def test_postgres_patch_storage_config_sets_in_container(self):
-        """A test for postgres patch storage config in container."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-        self.harness.charm._state.resource_token = TEST_TOKEN
-
-        container = self.harness.model.unit.get_container("livepatch")
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-            self.harness.update_config(
-                {
-                    "patch-storage.type": "postgres",
-                    "patch-storage.postgres-connection-string": "postgres://user:password@host/db",
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": True,
-                }
-            )
-            self.harness.charm.on.config_changed.emit()
-
-            # Emit the pebble-ready event for livepatch
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        # Check the that the plan was updated
-        plan = self.harness.get_container_pebble_plan("livepatch")
-        required_environment = {
-            "LP_PATCH_STORAGE_TYPE": "postgres",
-            "LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING": "postgres://user:password@host/db",
-        }
-        environment = plan.to_dict()["services"]["livepatch"]["environment"]
-        self.assertEqual(environment, environment | required_environment)
-
-    def test_postgres_patch_storage_config_defaults_to_database_relation(self):
-        """A test for postgres patch storage config."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self.harness.add_relation("database", "postgres-new")
-        self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgres-new",
-            {
-                "username": "username",
-                "password": "password",  # nosec
-                "endpoints": "host",
-            },
-        )
-
-        container = self.harness.model.unit.get_container("livepatch")
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-            self.harness.update_config(
-                {
-                    "patch-storage.type": "postgres",
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": True,
-                }
-            )
-            self.harness.charm.on.config_changed.emit()
-
-            # Emit the pebble-ready event for livepatch
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        # Check the that the plan was updated
-        plan = self.harness.get_container_pebble_plan("livepatch")
-        required_environment = {
-            "LP_PATCH_STORAGE_TYPE": "postgres",
-            "LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING": "postgresql://username:password@host/livepatch-server",
-        }
-        environment = plan.to_dict()["services"]["livepatch"]["environment"]
-        self.assertEqual(environment, environment | required_environment)
-
-    def test_pro_airgapped_server_relation__success(self):
-        """Test pro-airgapped-server relation."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-
-            pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/0",
-                {
-                    "scheme": "scheme",
-                    "hostname": "some.host.name",
-                    "port": "9999",
-                },
-            )
-
-        self._assert_environment_contains(
-            {
-                "LP_CONTRACTS_ENABLED": True,
-                "LP_CONTRACTS_URL": "scheme://some.host.name:9999",
-            }
-        )
-
-    def test_pro_airgapped_server__sync_enabled_when_sync_token_set(self):
-        """Test pro-airgapped-server syncs is enabled when sync token is set."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                    "patch-sync.enabled": True,
-                    "patch-sync.token": "AAAABBBB",
-                }
-            )
-
-            pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/0",
-                {
-                    "scheme": "scheme",
-                    "hostname": "some.host.name",
-                    "port": "9999",
-                },
-            )
-
-        self._assert_environment_contains(
-            {
-                "LP_PATCH_SYNC_ENABLED": True,
-                "LP_PATCH_SYNC_TOKEN": "AAAABBBB",  # nosec
-                "LP_CONTRACTS_ENABLED": True,
-                "LP_CONTRACTS_URL": "scheme://some.host.name:9999",
-            }
-        )
-
-    def test_pro_airgapped_server__sync_disabled_when_sync_token_not_set(self):
-        """Test pro-airgapped-server syncs is disabled when sync token is set."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                    "patch-sync.enabled": True,
-                }
-            )
-
-            pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/0",
-                {
-                    "scheme": "scheme",
-                    "hostname": "some.host.name",
-                    "port": "9999",
-                },
-            )
-
-        self._assert_environment_contains(
-            {
-                "LP_CONTRACTS_ENABLED": True,
-                "LP_CONTRACTS_URL": "scheme://some.host.name:9999",
-                "LP_PATCH_SYNC_ENABLED": False,
-            },
-        )
-
-    def test_pro_airgapped_server_relation__multiple_units(self):
-        """Test pro-airgapped-server relation when there are multiple units."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-
-            pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/0",
-                {
-                    "scheme": "scheme",
-                    "hostname": "first.host",
-                    "port": "9999",
-                },
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "scheme://first.host:9999",
-                }
-            )
-
-            # Adding another unit of `pro-airgapped-server`, but this new unit should not
-            # affect the Livepatch server configuration.
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/1")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/1",
-                {
-                    "scheme": "scheme",
-                    "hostname": "second.host",
-                    "port": "9999",
-                },
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "scheme://first.host:9999",
-                }
-            )
-
-    def test_pro_airgapped_server_relation__multiple_units_one_departs(self):
-        """Test pro-airgapped-server relation when one of the relation units departs but the other one not."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-
-            pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/0",
-                {
-                    "scheme": "scheme",
-                    "hostname": "first.host",
-                    "port": "9999",
-                },
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "scheme://first.host:9999",
-                }
-            )
-
-            # Adding another unit of `pro-airgapped-server`, but this new unit should not
-            # affect the Livepatch server configuration.
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/1")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/1",
-                {
-                    "scheme": "scheme",
-                    "hostname": "second.host",
-                    "port": "9999",
-                },
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "scheme://first.host:9999",
-                }
-            )
-
-            # Now we drop remove the first `pro-airgapped-server` unit. The charm should
-            # use the second unit address.
-            self.harness.remove_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "scheme://second.host:9999",
-                }
-            )
-
-    def test_pro_airgapped_server_relation__relation_removed(self):
-        """Test when pro-airgapped-server is removed."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-        self.harness.charm._state.resource_token = TEST_TOKEN
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-
-            pro_rel_id = self.harness.add_relation("pro-airgapped-server", "pro-airgapped-server")
-            self.harness.add_relation_unit(pro_rel_id, "pro-airgapped-server/0")
-            self.harness.update_relation_data(
-                pro_rel_id,
-                "pro-airgapped-server/0",
-                {
-                    "scheme": "scheme",
-                    "hostname": "first.host",
-                    "port": "9999",
-                },
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "scheme://first.host:9999",
-                }
-            )
-
-            # Now we remove the relation. The plan should now point to the hosted contracts service.
-            self.harness.remove_relation(pro_rel_id)
-
-            self._assert_environment_contains(
-                {
-                    "LP_CONTRACTS_ENABLED": True,
-                    "LP_CONTRACTS_URL": "https://contracts.canonical.com",
-                }
-            )
-
-    def test_cve_catalog_relation__success(self):
-        """Test cve-catalog relation."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-        self.harness.charm._state.resource_token = TEST_TOKEN
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-
-            cves_rel_id = self.harness.add_relation("cve-catalog", "livepatch-cve-service")
-            self.harness.add_relation_unit(cves_rel_id, "livepatch-cve-service/0")
-            self.harness.update_relation_data(
-                cves_rel_id,
-                "livepatch-cve-service",
-                {
-                    "url": "scheme://some.host.name:9999",
-                },
-            )
-
-        self._assert_environment_contains(
-            {
-                "LP_CVE_LOOKUP_ENABLED": False,  # Should not get enabled automatically.
-                "LP_CVE_SYNC_ENABLED": False,  # Should not get enabled automatically.
-                "LP_CVE_SYNC_SOURCE_URL": "scheme://some.host.name:9999",
-                "LP_CVE_SYNC_INTERVAL": "1h",  # Default config value.
-                "LP_CVE_SYNC_TIMEOUT": "5m",  # Default config value.
-            }
-        )
-
-        self._assert_environment_contains(
-            {
-                "LP_LSN_SYNC_ENABLED": False,  # Should not get enabled automatically.
-                "LP_LSN_SYNC_SOURCE_URL": "scheme://some.host.name:9999",
-                "LP_LSN_SYNC_INTERVAL": "1h",  # Default config value.
-                "LP_LSN_SYNC_TIMEOUT": "5m",  # Default config value.
-            }
-        )
-
-    def test_cve_catalog_relation__relation_removed(self):
-        """Test when cve-catalog is removed."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        self.harness.charm._state.dsn = "postgresql://123"
-        self.harness.charm._state.resource_token = TEST_TOKEN
-
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config(
-                {
-                    "server.url-template": "http://localhost/{filename}",
-                    "server.is-hosted": False,
-                }
-            )
-
-            cves_rel_id = self.harness.add_relation("cve-catalog", "livepatch-cve-service")
-            self.harness.add_relation_unit(cves_rel_id, "livepatch-cve-service/0")
-            self.harness.update_relation_data(
-                cves_rel_id,
-                "livepatch-cve-service",
-                {
-                    "url": "scheme://some.host.name:9999",
-                },
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_CVE_LOOKUP_ENABLED": False,  # Should not get enabled automatically.
-                    "LP_CVE_SYNC_ENABLED": False,  # Should not get enabled automatically.
-                    "LP_CVE_SYNC_SOURCE_URL": "scheme://some.host.name:9999",
-                    "LP_CVE_SYNC_INTERVAL": "1h",  # Default config value.
-                    "LP_CVE_SYNC_TIMEOUT": "5m",  # Default config value.
-                }
-            )
-
-            self._assert_environment_contains(
-                {
-                    "LP_LSN_SYNC_ENABLED": False,  # Should not get enabled automatically.
-                    "LP_LSN_SYNC_SOURCE_URL": "scheme://some.host.name:9999",
-                    "LP_LSN_SYNC_INTERVAL": "1h",  # Default config value.
-                    "LP_LSN_SYNC_TIMEOUT": "5m",  # Default config value.
-                }
-            )
-
-            self.harness.update_config(
-                {
-                    "lsn-sync.enabled": True,
-                    "cve-sync.enabled": True,
-                }
-            )
-
-            # Now we remove the relation.
-            self.harness.remove_relation(cves_rel_id)
-
-            self._assert_environment_contains(
-                {
-                    "LP_CVE_LOOKUP_ENABLED": False,
-                    "LP_CVE_SYNC_ENABLED": True,  # Should remain enabled since it's a config option.
-                    "LP_LSN_SYNC_ENABLED": True,  # Should remain enabled since it's a config option.
-                    "LP_CVE_SYNC_SOURCE_URL": "",  # Should get cleared since relation is removed.
-                    "LP_LSN_SYNC_SOURCE_URL": "",  # Should get cleared since relation is removed
-                },
-            )
-
-    def _assert_environment_contains(self, contains: Dict[str, Any]):
-        """Assert Pebble plan environment contains given key/value pairs."""
-        plan = self.harness.get_container_pebble_plan("livepatch")
-        environment = plan.to_dict()["services"]["livepatch"]["environment"]
-        self.assertEqual(environment, environment | contains, "environment does not contain expected key/value pairs")
-
-    def _add_database_legacy_relation(self, dsn_string: str = "postgresql://user:pass@host:5432/livepatch-server"):
-        """Helper method to add and configure a legacy database relation."""
-        db_rel_id = self.harness.add_relation("database-legacy", "postgresql")
-
-        with patch("subprocess.check_call", return_value=None):
-            with patch("subprocess.check_output", return_value=b""):
-                self.harness.add_relation_unit(db_rel_id, "postgresql/0")
-
-        # Set DSN as if database was connected
-        self.harness.charm._state.dsn = dsn_string
-
-        return db_rel_id
-
-    def _start_service(self, container):
-        """Start the service"""
-        self.harness.charm._state.resource_token = TEST_TOKEN
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.update_config({"server.url-template": "http://localhost/{filename}"})
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-    def test_database_legacy_relation_broken__stops_service_and_clears_dsn(self):
-        """Test that database-legacy relation broken stops service and clears DSN without attempting restart."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self._add_database_legacy_relation()
-
-        container = self.harness.model.unit.get_container("livepatch")
-
-        self._start_service(container)
-
-        # Verify service is running
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertTrue(service.is_running())
-
-        # Act: Remove the database relation (triggers relation-broken)
-        with patch("subprocess.check_call", return_value=None):
-            with patch("subprocess.check_output", return_value=b""):
-                self.harness.remove_relation(db_rel_id)
-
-        # Assert: Service should be stopped
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertFalse(service.is_running())
-
-        # Assert: DSN should be cleared
-        self.assertIsNone(self.harness.charm._state.dsn)
-
-        # Assert: Status should be BlockedStatus
-        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
-        self.assertEqual(self.harness.charm.unit.status.message, "Database connection removed")
-
-    def _add_database_relation(self):
-        """Helper method to add and configure a database relation."""
-        db_rel_id = self.harness.add_relation("database", "postgresql-k8s")
-
-        self.harness.add_relation_unit(db_rel_id, "postgresql-k8s/0")
-        self.harness.update_relation_data(
-            db_rel_id,
-            "postgresql-k8s",
-            {
-                "username": "testuser",
-                "password": "testpass",  # nosec
-                "endpoints": "10.0.0.1:5432",
-            },
-        )
-
-        return db_rel_id
-
-    def test_database_relation_broken__stops_service_and_clears_dsn(self):
-        """Test that database relation broken stops service and clears DSN without attempting restart."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        db_rel_id = self._add_database_relation()
-
-        # Start the service
-        container = self.harness.model.unit.get_container("livepatch")
-        self._start_service(container)
-
-        # Verify service is running and DSN is set
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertTrue(service.is_running())
-        self.assertEqual(self.harness.charm._state.dsn, "postgresql://testuser:testpass@10.0.0.1:5432/livepatch-server")
-
-        # Act: Remove the database relation (triggers relation-broken)
-        self.harness.remove_relation(db_rel_id)
-
-        # Assert: Service should be stopped
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertFalse(service.is_running())
-
-        # Assert: DSN should be cleared
-        self.assertIsNone(self.harness.charm._state.dsn)
-
-        # Assert: Status should be BlockedStatus
-        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
-        self.assertEqual(self.harness.charm.unit.status.message, "Database connection removed")
-
-    def test_database_legacy_relation_broken__non_leader_unit(self):
-        """Test that non-leader units handle database-legacy relation broken correctly."""
-        self.harness.set_leader(False)
-        self.harness.enable_hooks()
-
-        # Setup: Add database relation
-        db_rel_id = self._add_database_legacy_relation()
-
-        # Set DSN as if database was connected (even though non-leader shouldn't set it)
-        self.harness.charm._state.dsn = "postgresql://user:pass@host:5432/livepatch-server"
-
-        # Start the service
-        container = self.harness.model.unit.get_container("livepatch")
-        self._start_service(container)
-
-        # Act: Remove the database relation
-        with patch("subprocess.check_call", return_value=None):
-            with patch("subprocess.check_output", return_value=b""):
-                self.harness.remove_relation(db_rel_id)
-
-        # Assert: Service should be stopped
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertFalse(service.is_running())
-
-        # Assert: Status should be BlockedStatus
-        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
-        self.assertEqual(self.harness.charm.unit.status.message, "Database connection removed")
-
-    def test_database_relation_broken__service_not_running(self):
-        """Test that database relation broken handles case where service is not running."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        # Setup: Add database relation but don't start service
-        db_rel_id = self._add_database_relation()
-
-        # Act: Remove the database relation without starting service
-        self.harness.remove_relation(db_rel_id)
-
-        # Assert: Should not crash and should set appropriate status
-        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
-        self.assertEqual(self.harness.charm.unit.status.message, "Database connection removed")
-
-        # Assert: DSN should be cleared
-        self.assertIsNone(self.harness.charm._state.dsn)
-
-    def test_database_legacy_relation_broken_then_fixed__service_recovers(self):
-        """Test that service stops and DSN clears on broken legacy relation, then recovers when relation is fixed."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        # The `ops-lib-pgsql` library calls `leader-get` and `leader-set` tools
-        # from juju help-tools, so we need to mock calls that try to spawn a subprocess.
-        stored_data = "'{}'"
-
-        def set_database_name_using_juju_leader_set(cmd: List[str]):
-            nonlocal stored_data
-            self.assertEqual(cmd[0], "leader-set")
-            self.assertTrue(cmd[1].startswith("interface.pgsql="))
-            stored_data = yaml.safe_dump(cmd[1].removeprefix("interface.pgsql="))
-
-        check_call_mock = Mock(side_effect=set_database_name_using_juju_leader_set)
-
-        def get_database_name_using_juju_leader_get(cmd: List[str]):
-            self.assertEqual(cmd[0], "leader-get")
-            return bytes(stored_data, "utf-8")
-
-        check_output_mock = Mock(side_effect=get_database_name_using_juju_leader_get)
-
-        # Setup: Add and configure legacy database relation
-        dsn_string = "postgresql://username:password@host:5432/livepatch-server"
-        legacy_db_rel_id = self._add_database_legacy_relation(dsn_string)
-
-        # Verify DSN is set
-        self.assertEqual(self.harness.charm._state.dsn, dsn_string)
-
-        # Start the service
-        container = self.harness.model.unit.get_container("livepatch")
-        self._start_service(container)
-
-        # Verify service is running
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertTrue(service.is_running())
-
-        # Act 1: Remove the database relation (triggers relation-broken)
-        with patch("subprocess.check_call", check_call_mock):
-            with patch("subprocess.check_output", check_output_mock):
-                self.harness.remove_relation(legacy_db_rel_id)
-
-        # Assert 1: Service should be stopped and DSN cleared
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertFalse(service.is_running())
-        self.assertIsNone(self.harness.charm._state.dsn)
-        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
-        self.assertEqual(self.harness.charm.unit.status.message, "Database connection removed")
-
-        # Act 2: Re-establish the legacy database relation (fixing the broken relation)
-        new_dsn_string = "postgresql://newuser:newpass@newhost:5432/livepatch-server"
-        self._add_database_legacy_relation(dsn_string=new_dsn_string)
-
-        # Verify DSN is updated with new connection details
-        self.assertEqual(self.harness.charm._state.dsn, new_dsn_string)
-
-        # Trigger pebble ready again to start the service with new relation
-        with patch("src.charm.LivepatchCharm.migration_is_required") as migration:
-            migration.return_value = False
-            self.harness.charm.on.livepatch_pebble_ready.emit(container)
-
-        # Assert 2: Service should be running again with new DSN
-        service = container.get_service(LIVEPATCH_SERVICE_NAME)
-        self.assertTrue(service.is_running())
-        self.assertEqual(self.harness.charm._state.dsn, new_dsn_string)
-        self.assertIsInstance(self.harness.charm.unit.status, ActiveStatus)
-
-
-class TestSensitiveDataRedactedInLogs(unittest.TestCase):
-    """Verify that sensitive information never appears in charm log output."""
-
-    def setUp(self):
-        self.harness = Harness(LivepatchCharm)
-        self.addCleanup(self.harness.cleanup)
-
-        self.version_file = pathlib.Path("version")
-        pathlib.Path.touch(self.version_file)
-        self.addCleanup(lambda: os.remove(self.version_file))
-
-        self.harness.disable_hooks()
-        self.harness.add_oci_resource("livepatch-server-image")
-        self.harness.add_oci_resource("livepatch-schema-upgrade-tool-image")
-        self.harness.begin()
-        rel_id = self.harness.add_relation("livepatch", "livepatch")
-        self.harness.add_relation_unit(rel_id, f"{APP_NAME}/1")
-        self.harness.container_pebble_ready("livepatch")
-        self.harness.container_pebble_ready("livepatch-schema-upgrade")
-
-    def _joined_logs(self, cm) -> str:
-        """Return all captured log lines as a single newline-separated string."""
-        return "\n".join(cm.output)
-
-    def test_database_relation_event_does_not_log_sensitive_info(self):
-        """Standard database relation must log the endpoint but never the DB password."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        with self.assertLogs(level="DEBUG") as cm:
-            db_rel_id = self.harness.add_relation("database", "postgres-new")
-            self.harness.add_relation_unit(db_rel_id, "postgres-new/0")
-            self.harness.update_relation_data(
-                db_rel_id,
-                "postgres-new",
-                {
-                    "username": "dbuser",
-                    "password": "dbsecret",  # nosec
-                    "endpoints": "dbhost.example.com:5432",
-                },
-            )
-
-        all_logs = self._joined_logs(cm)
-        self.assertNotIn("postgresql://dbuser:dbsecret/dbhost.example.com:5432", all_logs)
-        self.assertNotIn("dbsecret", all_logs)
-        self.assertNotIn("dbhost.example.com:5432", all_logs)
-
-    def test_schema_upgrade_failure_dsn_in_stderr_is_redacted(self):
-        """When the schema tool echoes the DSN back in stderr, it must be redacted in logs."""
-        self.harness.set_leader(True)
-        self.harness.enable_hooks()
-
-        dsn = "postgresql://schemauser:schemasecret@db.host:5432/livepatch-server"
-        self.harness.charm._state.dsn = dsn
-        self.harness.charm._state.resource_token = TEST_TOKEN
-
-        schema_container = self.harness.model.unit.get_container("livepatch-schema-upgrade")
-        schema_container.exists = Mock(return_value=True)
-
-        def exec_side_effect(command):
-            def throw():
-                # Simulate schema tool echoing the DSN back in its error output
-                raise pebble.ExecError(
-                    command,
-                    1,
-                    "",
-                    f"could not connect to server: {dsn}",
-                )
-
-            process_mock = Mock()
-            process_mock.wait_output.side_effect = throw
-            return process_mock
-
-        schema_container.exec = Mock(side_effect=exec_side_effect)
-
-        with self.assertLogs(level="ERROR") as cm:
-            with self.assertRaises(ActionFailed):
-                self.harness.run_action("schema-upgrade")
-
-        all_logs = self._joined_logs(cm)
-        self.assertNotIn("schemasecret", all_logs)
-        self.assertIn(_REDACTED, all_logs)
-
-
-class TestIngressInterface(unittest.TestCase):
-    """Ingress interface tests."""
-
-    def _start_harness(self) -> Harness:
-        harness = Harness(LivepatchCharm)
-
-        self.addCleanup(harness.cleanup)
-        harness.add_oci_resource("livepatch-server-image")
-        harness.add_oci_resource("livepatch-schema-upgrade-tool-image")
-        harness.begin()
-        return harness
-
-    def test_ingress_default_uses_nginx_route(self):
-        """Assert that legacy nginx route is used by default."""
-        with patch("src.charm.require_nginx_route") as require_nginx_route:
-            harness = self._start_harness()
-
-        require_nginx_route.assert_called_once_with(
-            charm=harness.charm,
-            service_hostname=harness.charm.app.name,
-            service_name=harness.charm.app.name,
-            service_port=SERVER_PORT,
-        )
-
-    def test_ingress_uses_traefik_requirer(self):
-        """Assert that the charm uses IngressPerAppRequirer when configured for 'ingress'."""
-        with patch("src.charm.require_nginx_route") as require_nginx_route:
-            harness = self._start_harness()
-            require_nginx_route.reset_mock()
-            harness.update_config({"ingress-interface": "ingress"})
-
-        require_nginx_route.assert_not_called()
-        self.assertIsInstance(harness.charm.ingress, IngressPerAppRequirer)
-
-    def test_ingress_use_nginx_route_after_ingress(self):
-        """Assert that switching from 'ingress' to legacy nginx configures nginx route."""
-        with patch("src.charm.require_nginx_route") as require_nginx_route:
-            harness = self._start_harness()
-            require_nginx_route.reset_mock()
-
-            harness.update_config({"ingress-interface": "ingress"})
-            self.assertIsInstance(harness.charm.ingress, IngressPerAppRequirer)
-            harness.update_config({"ingress-interface": "legacy-nginx-route"})
-            self.assertEqual(harness.charm.ingress, require_nginx_route.return_value)
-
-        require_nginx_route.assert_called_once_with(
-            charm=harness.charm,
-            service_hostname=harness.charm.app.name,
-            service_name=harness.charm.app.name,
-            service_port=SERVER_PORT,
-        )
-
-    def test_ingress_use_ingress_after_nginx_route(self):
-        """Assert that switching from legacy nginx to 'ingress' configures Traefik ingress."""
-        with patch("src.charm.require_nginx_route") as require_nginx_route:
-            harness = self._start_harness()
-            require_nginx_route.reset_mock()
-
-            harness.update_config({"ingress-interface": "ingress"})
-            require_nginx_route.assert_not_called()
-            self.assertIsInstance(harness.charm.ingress, IngressPerAppRequirer)
-
-    def test_ingress_blocked_on_invalid_method(self):
-        """assert that the charm is Blocked if an invalid ingress interface is set."""
-        harness = self._start_harness()
-        harness.update_config({"ingress-interface": "invalid-ingress"})
-
-        self.assertIsInstance(harness.charm.unit.status, BlockedStatus)
-        self.assertEqual(harness.charm.unit.status.message, "Invalid ingress interface specified: invalid-ingress")
-
-    def test_ingress_blocked_on_invalid_method_then_nginx(self):
-        """assert that the charm transitions from Blocked to Active when nginx-route is set after an invalid one."""
-        with patch("src.charm.require_nginx_route") as require_nginx_route:
-            harness = self._start_harness()
-
-            require_nginx_route.assert_called_once_with(
-                charm=harness.charm,
-                service_hostname=harness.charm.app.name,
-                service_name=harness.charm.app.name,
-                service_port=SERVER_PORT,
-            )
-
-            require_nginx_route.reset_mock()
-
-            harness.update_config({"ingress-interface": "invalid-ingress"})
-
-            self.assertIsInstance(harness.charm.unit.status, BlockedStatus)
-            self.assertEqual(
-                harness.charm.unit.status.message,
-                "Invalid ingress interface specified: invalid-ingress",
-            )
-
-            harness.update_config({"ingress-interface": "legacy-nginx-route"})
-
-            require_nginx_route.assert_called_once_with(
-                charm=harness.charm,
-                service_hostname=harness.charm.app.name,
-                service_name=harness.charm.app.name,
-                service_port=SERVER_PORT,
-            )
-            self.assertEqual(harness.charm.ingress, require_nginx_route.return_value)
-
-    def test_ingress_blocked_on_invalid_method_then_gateway(self):
-        """Assert that the charm transitions from Blocked when updated to 'ingress'."""
-        with patch("src.charm.require_nginx_route") as require_nginx_route:
-            harness = self._start_harness()
-            require_nginx_route.reset_mock()
-
-            harness.update_config({"ingress-interface": "invalid-ingress"})
-
-            self.assertIsInstance(harness.charm.unit.status, BlockedStatus)
-            self.assertEqual(
-                harness.charm.unit.status.message,
-                "Invalid ingress interface specified: invalid-ingress",
-            )
-
-            harness.update_config({"ingress-interface": "ingress"})
-
-        require_nginx_route.assert_not_called()
-        self.assertIsInstance(harness.charm.ingress, IngressPerAppRequirer)
-
-    def test_ingress_nginx_to_gateway_back_to_nginx(self):
-        """Assert that switching between legacy nginx and ingress does not raise duplicate object exceptions."""
-        harness = self._start_harness()
-        self.assertIsInstance(harness.charm.ingress, NginxRouteRequirer)
-        harness.update_config({"ingress-interface": "ingress"})
-        self.assertIsInstance(harness.charm.ingress, IngressPerAppRequirer)
-
-        harness.update_config({"ingress-interface": "legacy-nginx-route"})
-        self.assertIsInstance(harness.charm.ingress, NginxRouteRequirer)
