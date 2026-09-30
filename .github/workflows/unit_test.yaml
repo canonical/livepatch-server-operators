@@ -10,13 +10,11 @@ jobs:
   unit-test:
     name: Unit tests (${{ matrix.charm }})
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.continue-on-error }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - charm: livepatch-machine-operator
-            continue-on-error: false
           - charm: livepatch-k8s-operator
     steps:
       - name: Checkout
