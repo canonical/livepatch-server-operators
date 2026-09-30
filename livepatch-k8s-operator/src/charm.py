@@ -192,8 +192,17 @@ def _resolve_secret_config(
 class LivepatchApp(paas_charm.app.App):
     """Application wrapper that maps charm state to livepatch-server's `LP_*` env vars."""
 
-    def __init__(self, *args, charm: ops.CharmBase = None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *, charm: "LivepatchCharm", **kwargs: typing.Any) -> None:
+        """Construct, keeping a reference to the owning charm for the custom env var logic.
+
+        `paas_charm.app.App` doesn't keep a reference to the charm itself, but
+        `gen_environment()` below needs one to read custom relation/secret state.
+
+        Args:
+            charm: the charm instance that owns this App.
+            kwargs: passthrough to `paas_charm.app.App.__init__`.
+        """
+        super().__init__(**kwargs)
         self._charm = charm
 
     def gen_environment(self) -> dict[str, str]:
@@ -209,7 +218,7 @@ class LivepatchApp(paas_charm.app.App):
         """
         env = super().gen_environment()
 
-        charm = self._charm  # type: ignore[attr-defined]
+        charm = self._charm
 
         user_defined_config = dict(self._charm_state.user_defined_config)
 
@@ -317,6 +326,8 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             args: passthrough to CharmBase/PaasCharm.
         """
+        # The `metrics-db`/`postgresql` interface collision in make_database_requirers()
+        # is handled by the module-level patch above.
         super().__init__(*args)
         setup_log_redaction()
 
@@ -389,11 +400,11 @@ class LivepatchCharm(paas_charm.go.Charm):
             A new LivepatchApp instance.
         """
         return LivepatchApp(
+            charm=self,
             container=self._container,
             charm_state=self._create_charm_state(),
             workload_config=self._workload_config,
             database_migration=self._database_migration,
-            charm=self,
         )
 
     # --- Custom relation handlers -------------------------------------------------
