@@ -91,12 +91,10 @@ artifacts are:
 
 ### Running tests
 
-Run the shared-module tests and verify that both charms expose the same
-configuration options from the repository root:
+Run the shared-module tests from the repository root:
 
 ```sh
 tox -e shared
-tox -e config-parity
 ```
 
 After `make sync`, run each charm's unit tests:

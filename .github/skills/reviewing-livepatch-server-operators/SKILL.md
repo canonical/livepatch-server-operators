@@ -37,9 +37,10 @@ Review the sources instead:
   relation objects or charm-only modules. Charm wrappers (e.g. each charm's
   `src/log_redactor.py`) register charm-specific behaviour on top.
 - **Config parity.** Both charms must expose identical config options (names,
-  types, defaults and descriptions, except the intentional differences listed
-  in `tests/config_parity_lib.py`). Config changes to one charm without the
-  matching change to the other should fail `tox -e config-parity`.
+  types, defaults and descriptions, apart from intentional charm-specific
+  differences). The shared secret-option mappings and their resolution live in
+  `shared/livepatch_common/config.py`; a config change to one charm must be
+  mirrored in the other.
 - **Sensitive config.** A new secret-bearing option must be added to the log
   redaction patterns: the `LP_*` env var in `shared/livepatch_common/log_redactor.py`
   and, for the machine charm, the `lp.*` snap key in its `src/log_redactor.py`.
@@ -62,7 +63,6 @@ Review the sources instead:
 Run `make sync` before any per-charm command.
 
 - `tox -e shared`: shared package tests.
-- `tox -e config-parity`: config parity between the charms.
 - `cd livepatch-machine-operator && tox -e unit`
 - `cd livepatch-k8s-operator && tox -e unit`
 - `make opcli-build` (preferred) or `make pack`: builds both charms. Afterwards

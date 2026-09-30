@@ -24,13 +24,15 @@ Do not edit those synced copies directly. Edit `shared/`, then run `make sync`.
 - Run `make sync` before packing, per-charm unit tests, or linting.
 - Preferred build: `make opcli-build`.
 - Alternative build: `make pack`.
-- Root tests: `tox -e shared` and `tox -e config-parity`.
+- Root tests: `tox -e shared`.
 - Per-charm tests, after `make sync`:
   - `cd livepatch-k8s-operator && tox -e unit`
   - `cd livepatch-machine-operator && tox -e unit`
 
-The two charms must expose identical config options; keep `tox -e config-parity`
-passing when changing charm config.
+The two charms must expose identical config options. Shared config handling
+(the secret-option mappings and their resolution) lives in
+`shared/livepatch_common/config.py`; keep both charms' config option
+definitions in sync when changing charm config.
 
 ## Packaging guardrails
 

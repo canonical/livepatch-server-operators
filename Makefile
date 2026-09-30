@@ -6,13 +6,16 @@ SHARED := $(CURDIR)/shared
 K8S := livepatch-k8s-operator
 MACHINE := livepatch-machine-operator
 
-.PHONY: sync pack opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-spread
+.PHONY: sync pack unit-test unit-test-k8s unit-test-machine \
+	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-spread
 
 CONCIERGE := concierge-juju3.yaml
 
 sync:
 	@test -n "$$(ls -A $(SHARED)/livepatch_common)" || (echo "error: empty $(SHARED)/livepatch_common" && exit 1)
 	@rm -rf $(K8S)/src/livepatch_common $(MACHINE)/src/livepatch_common
+	@cp -r $(SHARED)/livepatch_common $(K8S)/src/livepatch_common
+	@cp -r $(SHARED)/livepatch_common $(MACHINE)/src/livepatch_common
 	@rm -rf $(K8S)/cos_custom/grafana_dashboards $(MACHINE)/src/grafana_dashboards
 	@mkdir -p $(K8S)/src $(K8S)/cos_custom/grafana_dashboards $(MACHINE)/src/grafana_dashboards
 	@cp $(SHARED)/grafana_dashboards/*.json $(K8S)/cos_custom/grafana_dashboards/
@@ -21,6 +24,19 @@ sync:
 pack: sync
 	cd $(K8S) && charmcraft pack
 	cd $(MACHINE) && charmcraft pack
+
+# Unit tests. Each per-charm target re-runs sync so the staged copies of
+# shared/livepatch_common are current in the charm tree it tests.
+unit-test: sync
+	tox -e shared
+	$(MAKE) unit-test-k8s
+	$(MAKE) unit-test-machine
+
+unit-test-k8s: sync
+	cd $(K8S) && tox -e unit
+
+unit-test-machine: sync
+	cd $(MACHINE) && tox -e unit
 
 opcli-build: sync
 	opcli artifacts build
