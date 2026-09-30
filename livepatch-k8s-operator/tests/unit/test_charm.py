@@ -364,7 +364,7 @@ def test_pro_airgapped_server_multiple_units_prefers_first_with_data(context, ba
 def test_pro_airgapped_server_relation_removed_falls_back_to_resource_token(context, base_state):
     """arrange: leader unit, a stored resource token, no airgapped relation.
     act: config-changed.
-    assert: LP_CONTRACTS_ENABLED is absent and LP_PATCH_SYNC_TOKEN uses the resource token.
+    assert: LP_CONTRACTS_ENABLED is off and LP_PATCH_SYNC_TOKEN uses the resource token.
     """
     secret = testing.Secret(tracked_content={"token": "stored-resource-token"}, label=RESOURCE_TOKEN_SECRET_LABEL)
     state_in = dataclasses.replace(testing.State(**base_state), secrets={secret})
@@ -372,7 +372,7 @@ def test_pro_airgapped_server_relation_removed_falls_back_to_resource_token(cont
     state_out = context.run(context.on.config_changed(), state_in)
 
     env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
-    assert "LP_CONTRACTS_ENABLED" not in env
+    assert env["LP_CONTRACTS_ENABLED"] == "false"
     assert env["LP_PATCH_SYNC_TOKEN"] == "stored-resource-token"
 
 

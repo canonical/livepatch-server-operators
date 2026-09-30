@@ -64,6 +64,7 @@ paas_charm.databases.make_database_requirers = _patched_make_database_requirers
 paas_charm.charm.make_database_requirers = _patched_make_database_requirers
 
 from legacy_constants import map_old_config_to_new_config
+from livepatch_common.config import SECRET_FALLBACK_OPTIONS, SECRET_GROUPS, SECRET_VALUE_KEY
 from livepatch_common.contracts import get_machine_token, get_proxy_dict, get_resource_token
 from livepatch_common.relations import (
     cve_source_url,
@@ -92,51 +93,55 @@ RESOURCE_TOKEN_SECRET_LABEL = "patch-sync-resource-token"
 # Juju secret label used to persist the legacy (pgsql interface) database
 # connection string. Same reasoning as RESOURCE_TOKEN_SECRET_LABEL above.
 LEGACY_DB_SECRET_LABEL = "legacy-database-connection-string"
-# The key under which a `type: secret` config option or the `contract-token`
-# action param's value is expected to be stored in the secret's content, for
-# options that hold a single, standalone value.
-SECRET_VALUE_KEY = "value"  # nosec B105
+
+
+def _udc_key(option: str) -> str:
+    """Return the `user_defined_config` key form of a canonical option name.
+
+    paas-charm exposes configuration under keys with dashes replaced by
+    underscores and dots preserved.
+
+    Args:
+        option: the canonical Juju option name.
+
+    Returns:
+        The option's `user_defined_config` key form.
+    """
+    return option.replace("-", "_")
+
+
+def _env_var_name(option: str) -> str:
+    """Return the `LP_*` environment variable name for a canonical option.
+
+    Args:
+        option: the canonical Juju option name.
+
+    Returns:
+        The uppercased, `LP_`-prefixed environment variable name.
+    """
+    return "LP_" + option.replace("-", "_").replace(".", "_").upper()
+
 
 # Standalone config options with a preferred, Juju-secret-backed sibling: the
-# secret (if set) takes priority over the deprecated plain-text option. Keyed
-# by the plain option's `user_defined_config` key form (dashes underscored,
-# dots preserved), mapping to its secret sibling's key form and the `LP_*`
-# env var both ultimately feed.
+# secret (if set) takes priority over the deprecated plain-text option. Derived
+# from the shared canonical mapping and keyed by the plain option's
+# `user_defined_config` key form, mapping to its secret sibling's key form and
+# the `LP_*` env var both ultimately feed.
 SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
-    "auth.basic.users": ("auth.basic.users_secret", "LP_AUTH_BASIC_USERS"),
-    "patch_storage.swift_api_key": ("patch_storage.swift_api_key_secret", "LP_PATCH_STORAGE_SWIFT_API_KEY"),
-    "patch_storage.gcs_credentials_json": (
-        "patch_storage.gcs_credentials_json_secret",
-        "LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON",
-    ),
-    "patch_storage.ibm_api_key": ("patch_storage.ibm_api_key_secret", "LP_PATCH_STORAGE_IBM_API_KEY"),
-    "patch_sync.token": ("patch_sync.token_secret", "LP_PATCH_SYNC_TOKEN"),
-    "influx.token": ("influx.token_secret", "LP_INFLUX_TOKEN"),
+    _udc_key(plain): (_udc_key(secret), _env_var_name(plain))
+    for plain, secret in SECRET_FALLBACK_OPTIONS.items()
 }
 
 # Config options that bundle several related, deprecated plain-text options
 # into a single preferred Juju secret (so operators only have to manage one
-# secret per group). Keyed by the secret's `user_defined_config` key form,
-# mapping each expected secret content key to the plain option's key form and
-# the `LP_*` env var both ultimately feed.
+# secret per group). Derived from the shared canonical mapping and keyed by the
+# secret's `user_defined_config` key form, mapping each expected secret content
+# key to the plain option's key form and the `LP_*` env var both ultimately feed.
 SECRET_GROUP_ENV_VARS: dict[str, dict[str, tuple[str, str]]] = {
-    "contracts.credentials_secret": {
-        "user": ("contracts.user", "LP_CONTRACTS_USER"),
-        "password": ("contracts.password", "LP_CONTRACTS_PASSWORD"),
-        "ca": ("contracts.ca", "LP_CONTRACTS_CA"),
-    },
-    "patch_storage.s3_credentials_secret": {
-        "access-key": ("patch_storage.s3_access_key", "LP_PATCH_STORAGE_S3_ACCESS_KEY"),
-        "secret-key": ("patch_storage.s3_secret_key", "LP_PATCH_STORAGE_S3_SECRET_KEY"),
-    },
-    "patch_storage.azure_credentials_secret": {
-        "account-key": ("patch_storage.azure_account_key", "LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY"),
-        "connection-string": (
-            "patch_storage.azure_connection_string",
-            "LP_PATCH_STORAGE_AZURE_CONNECTION_STRING",
-        ),
-        "client-secret": ("patch_storage.azure_client_secret", "LP_PATCH_STORAGE_AZURE_CLIENT_SECRET"),
-    },
+    _udc_key(group): {
+        content_key: (_udc_key(plain), _env_var_name(plain)) for content_key, plain in sub_keys.items()
+    }
+    for group, sub_keys in SECRET_GROUPS.items()
 }
 
 
