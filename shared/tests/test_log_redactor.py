@@ -32,6 +32,13 @@ def test_env_var_redaction_is_shared():
     assert SECRET not in _redact(f"LP_CONTRACTS_PASSWORD={SECRET} LP_OTHER_VAR=1")
 
 
+def test_app_secret_key_env_var_is_redacted():
+    result = _redact(f"LP_APP_SECRET_KEY={SECRET}")
+
+    assert SECRET not in result
+    assert f"LP_APP_SECRET_KEY={_REDACTED}" == result
+
+
 @pytest.fixture
 def child_logger():
     logger = logging.getLogger("livepatch_common.tests.child")
