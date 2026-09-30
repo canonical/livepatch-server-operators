@@ -91,17 +91,19 @@ artifacts are:
 
 ### Running tests
 
-Run the shared-module tests from the repository root:
+Run every unit test suite from the repository root:
 
 ```sh
-tox -e shared
+make unit-test
 ```
 
-After `make sync`, run each charm's unit tests:
+That runs the shared-module tests plus each charm's unit tests, syncing the
+shared sources into the charm trees first. To run a single suite:
 
 ```sh
-(cd livepatch-k8s-operator && tox -e unit)
-(cd livepatch-machine-operator && tox -e unit)
+make unit-test-shared    # shared/tests against shared/livepatch_common
+make unit-test-k8s       # livepatch-k8s-operator
+make unit-test-machine   # livepatch-machine-operator
 ```
 
 ## License

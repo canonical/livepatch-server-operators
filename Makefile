@@ -6,7 +6,7 @@ SHARED := $(CURDIR)/shared
 K8S := livepatch-k8s-operator
 MACHINE := livepatch-machine-operator
 
-.PHONY: sync pack unit-test unit-test-k8s unit-test-machine \
+.PHONY: sync pack unit-test unit-test-shared unit-test-k8s unit-test-machine \
 	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-spread
 
 CONCIERGE := concierge-juju3.yaml
@@ -28,9 +28,14 @@ pack: sync
 # Unit tests. Each per-charm target re-runs sync so the staged copies of
 # shared/livepatch_common are current in the charm tree it tests.
 unit-test: sync
-	tox -e shared
+	$(MAKE) unit-test-shared
 	$(MAKE) unit-test-k8s
 	$(MAKE) unit-test-machine
+
+# Tests shared/tests against shared/livepatch_common directly. These sources are
+# not staged into the charm trees, so no sync is needed here.
+unit-test-shared:
+	tox -e shared
 
 unit-test-k8s: sync
 	cd $(K8S) && tox -e unit

@@ -60,10 +60,10 @@ Review the sources instead:
 
 ## Verifying a change
 
-Run `make sync` before any per-charm command.
+Run `make unit-test` to run every unit test suite, or a single one:
 
-- `tox -e shared`: shared package tests.
-- `cd livepatch-machine-operator && tox -e unit`
-- `cd livepatch-k8s-operator && tox -e unit`
+- `make unit-test-shared`: shared package tests.
+- `make unit-test-machine`: machine charm unit tests.
+- `make unit-test-k8s`: k8s charm unit tests.
 - `make opcli-build` (preferred) or `make pack`: builds both charms. Afterwards
   check that no root `lib/` exists and inspect contents with `unzip -Z1 <charm>`.

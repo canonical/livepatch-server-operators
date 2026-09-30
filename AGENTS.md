@@ -24,10 +24,10 @@ Do not edit those synced copies directly. Edit `shared/`, then run `make sync`.
 - Run `make sync` before packing, per-charm unit tests, or linting.
 - Preferred build: `make opcli-build`.
 - Alternative build: `make pack`.
-- Root tests: `tox -e shared`.
-- Per-charm tests, after `make sync`:
-  - `cd livepatch-k8s-operator && tox -e unit`
-  - `cd livepatch-machine-operator && tox -e unit`
+- Unit tests: `make unit-test` runs everything. The individual targets are
+  `make unit-test-shared` (tests `shared/tests/` against `shared/livepatch_common/`,
+  the only tests not staged into the charm trees), `make unit-test-k8s` and
+  `make unit-test-machine`. The per-charm targets run `sync` themselves.
 
 The two charms must expose identical config options. Shared config handling
 (the secret-option mappings and their resolution) lives in
