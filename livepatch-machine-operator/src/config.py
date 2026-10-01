@@ -44,7 +44,7 @@ OPT_PATCH_SYNC_ENABLED = "patch-sync.enabled"
 # Snap configuration keys the charm computes rather than passes through.
 KEY_IS_LEADER = "server.is-leader"
 KEY_DB_CONNECTION_STRING = "database.connection-string"
-KEY_TIMESCALE_DB_CONNECTION_STRING = "timescale_db.connection-string"
+KEY_TIMESCALE_DB_CONNECTION_STRING = "timescale-db.connection-string"
 KEY_CVE_SYNC_SOURCE_URL = "cve-sync.source-url"
 KEY_LSN_SYNC_SOURCE_URL = "lsn-sync.source-url"
 KEY_OTEL_METRICS_OTLP_ENDPOINT = "otel-metrics.otlp-endpoint"
