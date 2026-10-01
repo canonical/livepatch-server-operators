@@ -28,7 +28,7 @@ juju deploy canonical-livepatch-server-k8s
 
 ```sh
 # In a machine model
-juju deploy canonical-livepatch-server
+juju deploy canonical-livepatch-server-vm
 ```
 
 ### Database integration
@@ -45,7 +45,7 @@ juju integrate canonical-livepatch-server-k8s:postgresql postgresql-k8s:database
 ```sh
 # In a machine model
 juju deploy postgresql
-juju integrate canonical-livepatch-server:database postgresql:database
+juju integrate canonical-livepatch-server-vm:database postgresql:database
 ```
 
 See the [Kubernetes](livepatch-k8s-operator/README.md#integrations) and
