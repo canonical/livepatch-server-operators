@@ -5,8 +5,6 @@ project: livepatch-server-operators
 path: /home/ubuntu/proj
 kill-timeout: 60m
 warn-timeout: 1m
-prepare: |
-  make sync
 backends:
   integration-test:
     type: integration-test
