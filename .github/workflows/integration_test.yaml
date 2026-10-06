@@ -17,8 +17,8 @@ on:
   pull_request:
 
 env:
-  # charm-ci v0.0.1-alpha.9
-  OPCLI_GIT_REF: 5fe9ef70e1f78106e4b9c3b61ae143fe10f970d3
+  # charm-ci v1.0.1
+  OPCLI_GIT_REF: 58ae6614a3b143d4e57eff0fd1770e97d8c30fab
   BUILD_TIMEOUT_MINUTES: 60
   SPREAD_JOBS_INCLUDE: "integration-test-ci:*"
 
