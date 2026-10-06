@@ -686,6 +686,73 @@ class TestActions:
         with pytest.raises(testing.ActionFailed, match="No users provided"):
             ctx.run(ctx.on.action("set-basic-users", params={"users": ""}), state_in)
 
+    def test_emit_updated_config_action__success(self, ctx, snap_set):
+        """Convert an exported reactive-charm config.
+
+        Also exercises the machine-only `psql_dbname` -> `database.name`
+        backwards-compat mapping, which the shared migration map drops.
+        """
+        state_in = _leader_state()
+        old_config = yaml.safe_dump(
+            {
+                "options": {
+                    "auth_basic_users": {"value": "admin:hash"},
+                    "url_template": {"value": "https://example.com/{filename}"},
+                    "psql_dbname": {"value": "livepatch"},
+                    "auth_lp_teams": {"value": "team"},
+                }
+            }
+        )
+        ctx.run(ctx.on.action("emit-updated-config", params={"config-file": old_config}), state_in)
+        result = ctx.action_results["result"]
+        new_config = yaml.safe_load(result["new-config"])
+        assert new_config == {
+            "canonical-livepatch-server": {
+                "auth.basic.enabled": True,
+                "auth.basic.users": "admin:hash",
+                "server.url-template": "https://example.com/{filename}",
+                "database.name": "livepatch",
+            }
+        }
+        assert "psql_dbname" not in result["removed-keys"]
+        assert "auth_lp_teams" in result["removed-keys"]
+
+    def test_emit_updated_config_action__invalid_yaml(self, ctx, snap_set):
+        """The action fails cleanly on unparsable YAML."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="Failed to parse YAML"):
+            ctx.run(
+                ctx.on.action("emit-updated-config", params={"config-file": "not: valid: yaml: :"}),
+                state_in,
+            )
+
+    def test_emit_updated_config_action__non_dict_yaml(self, ctx, snap_set):
+        """The action fails when the YAML is valid but not a mapping."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="invalid config file format"):
+            ctx.run(
+                ctx.on.action("emit-updated-config", params={"config-file": "- a\n- b\n"}),
+                state_in,
+            )
+
+    def test_emit_updated_config_action__no_options_key(self, ctx, snap_set):
+        """A mapping without an `options`/`settings` key fails cleanly."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="Failed to map old config to new config"):
+            ctx.run(
+                ctx.on.action("emit-updated-config", params={"config-file": "unexpected: value\n"}),
+                state_in,
+            )
+
+    def test_emit_updated_config_action__malformed_options(self, ctx, snap_set):
+        """Malformed option entries return a clean action failure."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="Failed to map old config to new config: .*mapping"):
+            ctx.run(
+                ctx.on.action("emit-updated-config", params={"config-file": "options:\n  burst_limit: null\n"}),
+                state_in,
+            )
+
 
 class TestCustomCA:
     """Tests for custom CA configuration."""

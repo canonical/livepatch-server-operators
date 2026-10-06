@@ -56,3 +56,17 @@ set-basic-users:
 
 restart:
   description: Restart livepatch service daemon.
+
+emit-updated-config:
+  description: |
+    Generate new yaml config based on old reactive charm config.
+
+    Pass the contents of the old reactive charm's exported config via the
+    `config-file` param. This action does not change the running configuration;
+    it returns the converted options (ready to apply with `juju config`) along
+    with the keys that were removed or not recognised.
+  params:
+    config-file:
+      type: string
+      description: The contents of the old reactive charm's exported config file.
+  required: [config-file]

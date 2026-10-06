@@ -9,7 +9,10 @@ charm's entries that the k8s map never covered (influxdb_*, event_bus_*) are
 folded in so neither charm regresses.
 """
 
-from typing import Any, Dict, List, Tuple
+from collections.abc import Mapping
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 # Config map for converting from old reactive charm configs to the modern config format.
 CONFIG_MAP = {
@@ -191,3 +194,85 @@ def migrate_config(settings: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any],
             if converted_options[key] == current:
                 converted_options[key] = override
     return converted_options, removed_keys, unrecognized_keys
+
+
+def _apply_extra_mappings(
+    settings: Dict[str, Dict[str, Any]],
+    converted_options: Dict[str, Any],
+    removed_keys: List[str],
+    extra_mappings: Dict[str, str],
+) -> None:
+    """Restore charm-specific legacy mappings that the shared map drops.
+
+    Each ``legacy_key -> new_key`` pair is re-applied when the legacy key is
+    present with a usable value, and the legacy key is pulled back out of
+    ``removed_keys``. This exists for options a single charm still honours for
+    backwards compatibility even though the shared map marks them removed.
+
+    Args:
+        settings: the raw legacy ``options``/``settings`` mapping.
+        converted_options: the already-converted options, mutated in place.
+        removed_keys: the list of removed keys, mutated in place.
+        extra_mappings: the ``legacy_key -> new_key`` pairs to restore.
+
+    Raises:
+        ValueError: if a restored legacy key is present without a value.
+    """
+    for legacy_key, new_key in extra_mappings.items():
+        if legacy_key not in settings:
+            continue
+        value = settings[legacy_key].get("value")
+        if value is None:
+            raise ValueError(f"{legacy_key} doesn't have a set value for it")
+        if value == "":
+            continue
+        converted_options[new_key] = value
+        if legacy_key in removed_keys:
+            removed_keys.remove(legacy_key)
+
+
+def build_migrated_config(
+    document: Dict[str, Any],
+    *,
+    config_root: str,
+    extra_mappings: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Convert an exported reactive-charm config document into action results.
+
+    This is the charm-facing entry point shared by both livepatch charms'
+    config-migration actions. It parses the exported document, runs the shared
+    migration map, applies any charm-specific ``extra_mappings``, and serialises
+    the result under the charm's application name.
+
+    Args:
+        document: the parsed legacy config, a mapping carrying an ``options`` or
+            ``settings`` key (as exported by the old reactive charms).
+        config_root: the application name the new config must be nested under,
+            e.g. ``canonical-livepatch-server`` so ``juju config`` can read it.
+        extra_mappings: optional ``legacy_key -> new_key`` pairs to restore on
+            top of the shared map, for options a single charm still supports.
+
+    Returns:
+        A mapping with the serialised ``new-config`` YAML and the
+        ``removed-keys``/``unrecognized-keys`` lists.
+
+    Raises:
+        ValueError: if the document has no ``options``/``settings`` mapping, or
+            a mapped option has no configured value.
+    """
+    settings = document.get("options") or document.get("settings")
+    if not settings:
+        raise ValueError("No valid key for configuration found.")
+    if not isinstance(settings, Mapping):
+        raise ValueError("Configuration options/settings must be a mapping.")
+    for key, option in settings.items():
+        if not isinstance(option, Mapping):
+            raise ValueError(f"Configuration option {key!r} must be a mapping.")
+    converted_options, removed_keys, unrecognized_keys = migrate_config(settings)
+    if extra_mappings:
+        _apply_extra_mappings(settings, converted_options, removed_keys, extra_mappings)
+    return {
+        "new-config": yaml.dump({config_root: converted_options}).strip(),
+        "removed-keys": removed_keys,
+        "unrecognized-keys": unrecognized_keys,
+    }

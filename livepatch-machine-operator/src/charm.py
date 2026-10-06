@@ -208,6 +208,7 @@ class OperatorMachineCharm(CharmBase):
         self.framework.observe(self.on.schema_upgrade_action, self.on_schema_upgrade_action)
         self.framework.observe(self.on.set_basic_users_action, self.on_set_basic_users_action)
         self.framework.observe(self.on.restart_action, self.on_restart_action)
+        self.framework.observe(self.on.emit_updated_config_action, self.on_emit_updated_config_action)
 
         # Status is reported once, at the end of every hook.
         self.framework.observe(self.on.collect_unit_status, self._on_collect_unit_status)
@@ -313,6 +314,7 @@ class OperatorMachineCharm(CharmBase):
     ###########
     # ACTIONS #
     ###########
+    from actions.emit_updated_config import on_emit_updated_config_action
     from actions.enable import on_enable_action
     from actions.restart import on_restart_action
     from actions.schema_upgrade import on_schema_upgrade_action

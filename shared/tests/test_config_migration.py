@@ -3,7 +3,7 @@
 
 import pytest
 
-from livepatch_common.config_migration import migrate_config
+from livepatch_common.config_migration import build_migrated_config, migrate_config
 
 
 def test_migrate_config_maps_known_options():
@@ -76,3 +76,66 @@ def test_migrate_config_raises_when_value_missing():
 def test_migrate_config_skips_empty_value_for_mapped_key():
     converted, _, _ = migrate_config({"burst_limit": {"value": ""}})
     assert "server.burst-limit" not in converted
+
+
+def test_build_migrated_config_nests_under_config_root():
+    import yaml
+
+    result = build_migrated_config(
+        {"options": {"burst_limit": {"value": "100"}, "auth_lp_teams": {"value": "team"}}},
+        config_root="my-charm",
+    )
+    assert yaml.safe_load(result["new-config"]) == {"my-charm": {"server.burst-limit": "100"}}
+    assert result["removed-keys"] == ["auth_lp_teams"]
+    assert result["unrecognized-keys"] == []
+
+
+def test_build_migrated_config_falls_back_to_settings_key():
+    import yaml
+
+    result = build_migrated_config(
+        {"settings": {"burst_limit": {"value": "100"}}},
+        config_root="my-charm",
+    )
+    assert yaml.safe_load(result["new-config"]) == {"my-charm": {"server.burst-limit": "100"}}
+
+
+def test_build_migrated_config_applies_extra_mappings():
+    import yaml
+
+    result = build_migrated_config(
+        {"options": {"psql_dbname": {"value": "livepatch"}}},
+        config_root="my-charm",
+        extra_mappings={"psql_dbname": "database.name"},
+    )
+    assert yaml.safe_load(result["new-config"]) == {"my-charm": {"database.name": "livepatch"}}
+    assert result["removed-keys"] == []
+
+
+def test_build_migrated_config_extra_mappings_skip_empty_value():
+    import yaml
+
+    result = build_migrated_config(
+        {"options": {"psql_dbname": {"value": ""}}},
+        config_root="my-charm",
+        extra_mappings={"psql_dbname": "database.name"},
+    )
+    assert yaml.safe_load(result["new-config"]) == {"my-charm": {}}
+    assert result["removed-keys"] == ["psql_dbname"]
+
+
+def test_build_migrated_config_raises_when_no_settings():
+    with pytest.raises(ValueError, match="No valid key for configuration found."):
+        build_migrated_config({"something-else": {}}, config_root="my-charm")
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"options": ["bad"]},
+        {"options": {"burst_limit": None}},
+    ],
+)
+def test_build_migrated_config_rejects_malformed_settings(document):
+    with pytest.raises(ValueError, match="must be a mapping"):
+        build_migrated_config(document, config_root="my-charm")
