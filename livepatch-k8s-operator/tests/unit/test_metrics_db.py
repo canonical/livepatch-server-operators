@@ -51,7 +51,7 @@ def test_metrics_db_incomplete_credentials_yield_no_connection_string(context, b
 
 
 def test_timescale_db_config_options_are_mapped_generically(context, base_state):
-    """arrange: leader unit with timescale_db.* config set and the relation present.
+    """arrange: leader unit with timescale-db.* config set and the relation present.
     act: config-changed.
     assert: the config options are mapped to LP_TIMESCALE_DB_* the same way any
         other charm config is (LivepatchApp.gen_environment() doesn't special-case them).
@@ -61,10 +61,10 @@ def test_timescale_db_config_options_are_mapped_generically(context, base_state)
         testing.State(**base_state),
         relations=set(base_state["relations"]) | {relation},
         config={
-            "timescale_db.enabled": True,
-            "timescale_db.connection_pool_max": 20,
-            "timescale_db.connection_lifetime_max": "30m",
-            "timescale_db.work_mem": 32,
+            "timescale-db.enabled": True,
+            "timescale-db.connection-pool-max": 20,
+            "timescale-db.connection-lifetime-max": "30m",
+            "timescale-db.work-mem": 32,
         },
     )
 

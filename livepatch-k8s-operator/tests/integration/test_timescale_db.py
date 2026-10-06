@@ -74,9 +74,9 @@ async def test_metrics_db_config_options(ops_test: OpsTest):
     with ops_test.model_context(k8s_model_name):
         await ops_test.model.applications[APP_NAME].set_config(
             {
-                "timescale_db.connection_pool_max": "25",
-                "timescale_db.connection_lifetime_max": "20m",
-                "timescale_db.work_mem": "64",
+                "timescale-db.connection-pool-max": "25",
+                "timescale-db.connection-lifetime-max": "20m",
+                "timescale-db.work-mem": "64",
             }
         )
 

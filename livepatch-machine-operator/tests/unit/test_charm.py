@@ -317,7 +317,7 @@ class TestMetricsDBRelation:
         state_in = _leader_state(relations=[standard, metrics_db])
         ctx.run(ctx.on.relation_changed(metrics_db), state_in)
         assert any(
-            delta.get("lp.timescale_db.connection-string")
+            delta.get("lp.timescale-db.connection-string")
             == "postgresql://tsuser:tspass@postgres.local:5432/livepatch-metrics-db"
             for delta in snap_set
         )
@@ -328,7 +328,7 @@ class TestMetricsDBRelation:
         metrics_db = testing.Relation("metrics-db", remote_app_name="postgresql")
         state_in = _leader_state(relations=[standard, metrics_db])
         ctx.run(ctx.on.relation_changed(metrics_db), state_in)
-        assert not any(delta.get("lp.timescale_db.connection-string") for delta in snap_set)
+        assert not any(delta.get("lp.timescale-db.connection-string") for delta in snap_set)
 
     def test_metrics_db_relation__relation_removed(self, ctx, snap_set, schema_check):
         """Test removing the metrics-db relation clears the connection string."""
@@ -344,7 +344,7 @@ class TestMetricsDBRelation:
         metrics_db_removed = testing.Relation("metrics-db", remote_app_name="postgresql")
         state_removed = _leader_state(relations=[standard, metrics_db_removed])
         ctx.run(ctx.on.relation_broken(metrics_db_removed), state_removed)
-        assert any(delta.get("lp.timescale_db.connection-string") == "" for delta in snap_set)
+        assert any(delta.get("lp.timescale-db.connection-string") == "" for delta in snap_set)
 
 
 class TestCVECatalogRelation:

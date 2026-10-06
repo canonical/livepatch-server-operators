@@ -45,13 +45,12 @@ from constants.statuses import (
     SCHEMA_UPGRADE_FAILED,
 )
 from constants.snap import SCHEMA_TARGET_TIMESCALE
+from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME
 from relations import BothDatabaseRelationsError
 from util.schema_tool import SchemaToolError, run_schema_upgrade, upgrade_required
 from workload import SnapWorkload
 
 logger = logging.getLogger(__name__)
-
-TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt"
 
 
 class MachineReconciler:
