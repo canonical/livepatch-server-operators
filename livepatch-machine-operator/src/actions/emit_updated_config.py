@@ -40,7 +40,6 @@ def on_emit_updated_config_action(self: OperatorMachineCharm, event: ActionEvent
         result = build_migrated_config(
             config_yaml,
             config_root=CONFIG_ROOT,
-            extra_mappings={"psql_dbname": "database.name"},
         )
     except ValueError as e:
         event.fail(f"Failed to map old config to new config: {e}")
