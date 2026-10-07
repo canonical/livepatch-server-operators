@@ -116,7 +116,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-build-${{ matrix.type }}-${{ matrix.name }}-${{ matrix.arch }}
-          path: artifacts.build.yaml
+          path: build/artifacts.build.yaml
           if-no-files-found: error
 
   test-matrix:
