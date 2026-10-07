@@ -689,8 +689,7 @@ class TestActions:
     def test_emit_updated_config_action__success(self, ctx, snap_set):
         """Convert an exported reactive-charm config.
 
-        Also exercises the machine-only `psql_dbname` -> `database.name`
-        backwards-compat mapping, which the shared migration map drops.
+        Also exercises the removal of the unsupported legacy `psql_dbname` option.
         """
         state_in = _leader_state()
         old_config = yaml.safe_dump(
@@ -711,10 +710,9 @@ class TestActions:
                 "auth.basic.enabled": True,
                 "auth.basic.users": "admin:hash",
                 "server.url-template": "https://example.com/{filename}",
-                "database.name": "livepatch",
             }
         }
-        assert "psql_dbname" not in result["removed-keys"]
+        assert "psql_dbname" in result["removed-keys"]
         assert "auth_lp_teams" in result["removed-keys"]
 
     def test_emit_updated_config_action__invalid_yaml(self, ctx, snap_set):
@@ -729,11 +727,12 @@ class TestActions:
     def test_emit_updated_config_action__non_dict_yaml(self, ctx, snap_set):
         """The action fails when the YAML is valid but not a mapping."""
         state_in = _leader_state()
-        with pytest.raises(testing.ActionFailed, match="invalid config file format"):
+        with pytest.raises(testing.ActionFailed, match="invalid config file format") as exc_info:
             ctx.run(
-                ctx.on.action("emit-updated-config", params={"config-file": "- a\n- b\n"}),
+                ctx.on.action("emit-updated-config", params={"config-file": "- sensitive-value\n- b\n"}),
                 state_in,
             )
+        assert "sensitive-value" not in str(exc_info.value)
 
     def test_emit_updated_config_action__no_options_key(self, ctx, snap_set):
         """A mapping without an `options`/`settings` key fails cleanly."""

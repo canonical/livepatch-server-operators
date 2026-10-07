@@ -18,14 +18,6 @@ if TYPE_CHECKING:
 # The application name the generated config must be nested under for juju to read it.
 CONFIG_ROOT = "canonical-livepatch-server"
 
-# `psql_dbname` is dropped by the shared migration map because the k8s charm
-# takes its database name from a relation. The machine charm has always mapped
-# it to `database.name`, so it is restored here for backwards compatibility with
-# configs exported from the old reactive machine charm. Kept even though the
-# current machine charm has no `database.name` config option, so migrations of
-# older deployments don't silently lose the value.
-EXTRA_MAPPINGS = {"psql_dbname": "database.name"}
-
 
 def on_emit_updated_config_action(self: OperatorMachineCharm, event: ActionEvent) -> None:
     """Convert a legacy reactive-charm config export to the modern ops config.
@@ -39,13 +31,13 @@ def on_emit_updated_config_action(self: OperatorMachineCharm, event: ActionEvent
     try:
         config_yaml = yaml.safe_load(config_content)
         if not (isinstance(config_yaml, dict) and config_yaml.keys()):
-            event.fail(f"invalid config file format. Got content {config_content}")
+            event.fail("invalid config file format")
             return
     except yaml.YAMLError as e:
         event.fail(f"Failed to parse YAML: {e}")
         return
     try:
-        result = build_migrated_config(config_yaml, config_root=CONFIG_ROOT, extra_mappings=EXTRA_MAPPINGS)
+        result = build_migrated_config(config_yaml, config_root=CONFIG_ROOT)
     except ValueError as e:
         event.fail(f"Failed to map old config to new config: {e}")
         return
