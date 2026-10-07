@@ -10,6 +10,8 @@ from typing import Optional
 import jubilant
 from helpers import (
     ACTIVE_STATUS,
+    APP_IMAGE,
+    APP_IMAGE_RESOURCE,
     APP_NAME,
     APP_PORT,
     BLOCKED_STATUS,
@@ -60,15 +62,18 @@ def deploy_package(
         db_endpoint = LEGACY_DB_ENDPOINT
     else:
         assert charm is not None, "charm is required for local deploys"
-        logger.info("Deploying local charm %s", charm)
-        # The `app-image` resource's `upstream-source` default (declared in
-        # charmcraft.yaml's `resources` block) is fetched automatically by Juju,
-        # so we don't need to pass it in explicitly here.
+        assert APP_IMAGE, f"no OCI image for the {APP_IMAGE_RESOURCE!r} resource; set LIVEPATCH_APP_IMAGE"
+        logger.info("Deploying local charm %s with %s=%s", charm, APP_IMAGE_RESOURCE, APP_IMAGE)
+        # Juju rejects a local charm deploy on a k8s model unless every
+        # oci-image resource is supplied explicitly; it does not fall back to
+        # the `upstream-source` declared in charmcraft.yaml (that default only
+        # applies when charmcraft uploads the charm to Charmhub).
         juju.deploy(
             charm,
             APP_NAME,
             config=CHARM_CONFIG,
             num_units=1,
+            resources={APP_IMAGE_RESOURCE: APP_IMAGE},
         )
         db_endpoint = DB_ENDPOINT
 

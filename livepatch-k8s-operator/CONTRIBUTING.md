@@ -28,9 +28,6 @@ tox -e fmt                    # update your code according to linting rules
 tox -e lint                   # code style
 tox -e unit                   # unit tests
 tox -e integration            # integration tests
-tox -e integration-ingress    # integration tests for ingress
-tox -e integration-metricsdb  # integration tests for the metrics (TimescaleDB) database
-tox -e integration-airgapped  # integration tests for air-gapped deployments
 tox                           # runs 'lint' and 'unit' environments
 ```
 
@@ -41,14 +38,27 @@ The integration tests use [Jubilant](https://documentation.ubuntu.com/jubilant/)
 controller, and they don't pack the charm, so pack it first:
 
 ```shell
-CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=1 charmcraft pack
-LIVEPATCH_APP_IMAGE=ghcr.io/canonical/livepatch-server:<tag> tox -e integration
+make sync
+cd livepatch-k8s-operator
+charmcraft pack
+tox -e integration
+```
+
+A single test module can be selected with posargs, which is also how
+`opcli pytest run` drives this environment:
+
+```shell
+tox -e integration -- tests/integration/test_ingress.py
+tox -e integration -- tests/integration/test_timescale_db.py
+tox -e integration -- tests/integration/test_airgapped.py
 ```
 
 Environment variables:
 
-- `LIVEPATCH_APP_IMAGE` (required): OCI image (rock) used for the charm's `app-image` resource.
-  Its `vX.Y.Z` tag is also the expected charm version.
+- `LIVEPATCH_APP_IMAGE` (optional): OCI image used for the charm's `app-image` resource. Juju requires this
+  resource on every local charm deploy to a k8s model, so the tests always pass it; it defaults to the
+  `upstream-source` declared for that resource in `charmcraft.yaml`. When the reference carries a `vX.Y.Z`
+  tag, that tag is also the expected charm version.
 - `CHARM_PATH` (optional): path to the packed charm. Defaults to the single `*.charm` file in the charm root.
 - `JUJU_K8S_CLOUD` / `JUJU_LXD_CLOUD` (optional, cross-model tests): cloud names, default `microk8s` / `localhost`.
 - `JUJU_K8S_WORKLOAD_STORAGE` (optional): K8s storage class set on the K8s model when the controller runs on LXD,

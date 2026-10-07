@@ -138,7 +138,6 @@ assumes:
 containers:
   app:
     resource: app-image
-    upstream-source: ghcr.io/canonical/livepatch-server:develop
 peers:
   secret-storage:
     interface: secret-storage
@@ -189,6 +188,7 @@ resources:
   app-image:
     type: oci-image
     description: go application image.
+    upstream-source: ghcr.io/canonical/livepatch-server:develop
 config:
   options:
     ingress-interface:

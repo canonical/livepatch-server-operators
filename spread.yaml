@@ -23,7 +23,7 @@ exclude:
 - .venv
 - .*_cache
 
-# TODO: rework this once we switch to jubilant 
+# TODO: rework the machine suite once it is switched to jubilant
 integration-suites:
   livepatch-k8s-operator/tests/integration/:
     working-dir: livepatch-k8s-operator/
@@ -32,7 +32,10 @@ integration-suites:
     backends:
     - integration-test
     auto-discover: true
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
+    # pytest-jubilant tears the per-module models down by default, so there is
+    # no equivalent of pytest-operator's `--keep-models`/`--model` here; pass
+    # `--no-juju-teardown`/`--juju-model` locally when you want to keep them.
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s"'
     pytest-environment-template: |
       {% for build in artifacts.charms[0].builds if build.arch == arch %}
       CHARM_PATH={{ build.path }}

@@ -31,9 +31,30 @@ def charm() -> pathlib.Path:
         assert charms, f"No charms were found in {charm_dir.absolute()}"
         assert len(charms) == 1, f"Found more than one charm {charms}"
         charm_path = str(charms[0])
-    path = pathlib.Path(charm_path).resolve()
+    path = _resolve_charm_path(charm_path)
     assert path.is_file(), f"{path} is not a file"
     return path
+
+
+def _resolve_charm_path(charm_path: str) -> pathlib.Path:
+    """Resolve CHARM_PATH, which may be relative to the monorepo root.
+
+    `opcli` renders the spread `pytest-environment-template` against
+    artifacts.build.yaml, whose build paths are relative to the repository
+    root, but it runs tox from the charm's `working-dir`. So a relative
+    CHARM_PATH is tried against the current directory first and then against
+    each ancestor.
+    """
+    path = pathlib.Path(charm_path)
+    if path.is_absolute():
+        return path.resolve()
+
+    cwd = pathlib.Path.cwd()
+    for base in (cwd, *cwd.parents):
+        candidate = (base / path).resolve()
+        if candidate.is_file():
+            return candidate
+    return (cwd / path).resolve()
 
 
 def _controller_cloud_type(juju: jubilant.Juju) -> str:

@@ -37,11 +37,11 @@ APP_PORT = 8080
 DB_ENDPOINT = "postgresql"
 LEGACY_DB_ENDPOINT = "database"
 
-# Default `app-image` OCI reference, sourced from the `resources` block in
-# charmcraft.yaml (populated by the `go-framework` extension's expanded form).
-# Juju fetches this automatically for both Charmhub and local-path deploys, so
-# tests no longer need to pass it in explicitly (e.g. via an env var).
-APP_IMAGE = METADATA.get("resources", {}).get(APP_IMAGE_RESOURCE, {}).get("upstream-source")
+# OCI image used for the charm's `app-image` resource. A local charm deploy on
+# a k8s model must always pass this explicitly, so the `upstream-source` in
+# charmcraft.yaml is used as the default and `LIVEPATCH_APP_IMAGE` overrides it.
+DEFAULT_APP_IMAGE = METADATA.get("resources", {}).get(APP_IMAGE_RESOURCE, {}).get("upstream-source")
+APP_IMAGE = os.environ.get("LIVEPATCH_APP_IMAGE") or DEFAULT_APP_IMAGE
 
 K8S_CLOUD = os.environ.get("JUJU_K8S_CLOUD", "microk8s")
 LXD_CLOUD = os.environ.get("JUJU_LXD_CLOUD", "localhost")
@@ -117,12 +117,10 @@ def get_unit_url(juju: jubilant.Juju, application: str, unit: int, port: int, pr
     return f"{protocol}://{address}:{port}"
 
 
-def extract_version_from_image(image: str) -> str:
-    """Extract the version string (e.g. v1.2.3) from an OCI image reference."""
+def extract_version_from_image(image: str) -> Optional[str]:
+    """Return the version string (e.g. v1.2.3) in an OCI image reference, or None."""
     match = re.search(r"v[0-9]+(\.[0-9]+)*", image)
-    if match:
-        return match.group(0)
-    raise ValueError(f"No version found in image reference {image!r}")
+    return match.group(0) if match else None
 
 
 def get_pebble_env(juju: jubilant.Juju, unit: str = f"{APP_NAME}/0") -> dict:
