@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Legacy reactive-charm config to modern ops config migration.
+"""Reactive and original Operator config migration for both Livepatch charms.
 
 Single source of truth for both livepatch charms' migration maps. The k8s
 charm's map is authoritative where the two once disagreed; the machine
@@ -9,10 +9,13 @@ charm's entries that the k8s map never covered (influxdb_*, event_bus_*) are
 folded in so neither charm regresses.
 """
 
-from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Collection, Mapping
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
+
+if TYPE_CHECKING:
+    from ops.charm import ActionEvent
 
 # Config map for converting from old reactive charm configs to the modern config format.
 CONFIG_MAP = {
@@ -133,6 +136,105 @@ OVERRIDE_VALUES = {
 # Sentinel object used to optimize dict lookups.
 _MISSING = object()
 
+REMOVED_OPS_OPTIONS = {
+    "auth.sso.enabled",
+    "auth.sso.public-key",
+    "auth.sso.teams",
+    "auth.sso.url",
+    "cloud-delay.enabled",
+    "cloud-delay.default-delay-hours",
+    "machine-reports.event-bus.enabled",
+    "machine-reports.event-bus.brokers",
+    "machine-reports.event-bus.ca-cert",
+    "machine-reports.event-bus.client-cert",
+    "machine-reports.event-bus.client-key",
+    "machine-reports.event-bus.kafka-version",
+}
+
+
+def _settings(document: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Validate and extract scalar option values from an exported config."""
+    if "options" in document and "settings" in document:
+        raise ValueError("Configuration must not contain both options and settings.")
+    settings = document.get("options") or document.get("settings")
+    if not settings:
+        raise ValueError("No valid key for configuration found.")
+    if not isinstance(settings, dict):
+        raise ValueError("Configuration options/settings must be a mapping.")
+    for key, option in settings.items():
+        if not isinstance(key, str):
+            raise ValueError("Configuration option names must be strings.")
+        if not isinstance(option, Mapping):
+            raise ValueError(f"Configuration option {key!r} must be a mapping.")
+        value = option.get("value")
+        if value is not None and not isinstance(value, (str, bool, int, float)):
+            raise ValueError(f"Configuration option {key!r} must have a scalar value.")
+    return settings
+
+
+def _migration_result(
+    config_root: str, converted: Dict[str, Any], removed: List[str], unrecognized: List[str]
+) -> Dict[str, Any]:
+    """Serialize migrated values and diagnostics using the destination app name."""
+    return {
+        "new-config": yaml.safe_dump({config_root: converted}).strip(),
+        "removed-keys": removed,
+        "unrecognized-keys": unrecognized,
+    }
+
+
+def build_ops_migrated_config(
+    document: Dict[str, Any], *, config_root: str, supported_options: Collection[str]
+) -> Dict[str, Any]:
+    """Retain original Operator values supported by the destination charm.
+
+    Unset values are omitted; explicit false, zero, and empty strings are kept.
+    Known obsolete options and unknown options are reported separately.
+    """
+    settings = _settings(document)
+    if any(key in CONFIG_MAP or key in ADDITIONAL_CONFIG_MAP for key in settings):
+        raise ValueError("Reactive options found; use migrate-reactive-config for a reactive export.")
+    converted = {}
+    removed = []
+    unrecognized = []
+    for key, option in settings.items():
+        if key in supported_options:
+            value = option.get("value")
+            if value is not None:
+                converted[key] = value
+        elif key in REMOVED_OPS_OPTIONS:
+            removed.append(key)
+        else:
+            unrecognized.append(key)
+    return _migration_result(config_root, converted, removed, unrecognized)
+
+
+def handle_migration_action(
+    event: "ActionEvent",
+    *,
+    source: Literal["reactive", "ops"],
+    config_root: str,
+    supported_options: Collection[str],
+) -> None:
+    """Return migrated config without applying values or exposing parse input."""
+    try:
+        document = yaml.safe_load(event.params["config-file"])
+    except yaml.YAMLError:
+        event.fail("Failed to parse YAML: invalid config file syntax.")
+        return
+    if not isinstance(document, dict) or not document:
+        event.fail("invalid config file format")
+        return
+    try:
+        if source == "reactive":
+            result = build_migrated_config(document, config_root=config_root, supported_options=supported_options)
+        else:
+            result = build_ops_migrated_config(document, config_root=config_root, supported_options=supported_options)
+    except ValueError as exc:
+        event.fail(f"Failed to map old config to new config: {exc}")
+        return
+    event.set_results({"result": result})
+
 
 def __map_legacy_config(
     key: str, parsed_val: Any, unrecognized_keys: List[str], removed_keys: List[str], converted_options: Dict[str, Any]
@@ -236,6 +338,7 @@ def build_migrated_config(
     *,
     config_root: str,
     extra_mappings: Optional[Dict[str, str]] = None,
+    supported_options: Collection[str] = (),
 ) -> Dict[str, Any]:
     """Convert an exported reactive-charm config document into action results.
 
@@ -251,6 +354,8 @@ def build_migrated_config(
             e.g. ``canonical-livepatch-server`` so ``juju config`` can read it.
         extra_mappings: optional ``legacy_key -> new_key`` pairs to restore on
             top of the shared map, for options a single charm still supports.
+        supported_options: destination config keys used to identify input
+            belonging to an Operator export rather than a reactive export.
 
     Returns:
         A mapping with the serialised ``new-config`` YAML and the
@@ -260,19 +365,16 @@ def build_migrated_config(
         ValueError: if the document has no ``options``/``settings`` mapping, or
             a mapped option has no configured value.
     """
-    settings = document.get("options") or document.get("settings")
-    if not settings:
-        raise ValueError("No valid key for configuration found.")
-    if not isinstance(settings, Mapping):
-        raise ValueError("Configuration options/settings must be a mapping.")
-    for key, option in settings.items():
-        if not isinstance(option, Mapping):
-            raise ValueError(f"Configuration option {key!r} must be a mapping.")
+    settings = _settings(document)
+    operator_keys = (
+        set(supported_options)
+        | REMOVED_OPS_OPTIONS
+        | {key for key in CONFIG_MAP.values() if key is not None}
+        | {key for key, _ in ADDITIONAL_CONFIG_MAP.values()}
+    )
+    if operator_keys.intersection(settings):
+        raise ValueError("Operator options found; use migrate-ops-config for an Operator export.")
     converted_options, removed_keys, unrecognized_keys = migrate_config(settings)
     if extra_mappings:
         _apply_extra_mappings(settings, converted_options, removed_keys, extra_mappings)
-    return {
-        "new-config": yaml.dump({config_root: converted_options}).strip(),
-        "removed-keys": removed_keys,
-        "unrecognized-keys": unrecognized_keys,
-    }
+    return _migration_result(config_root, converted_options, removed_keys, unrecognized_keys)

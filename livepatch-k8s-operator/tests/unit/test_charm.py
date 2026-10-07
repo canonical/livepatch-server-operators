@@ -8,7 +8,7 @@ import dataclasses
 import pytest
 from ops import testing
 
-from charm import LEGACY_DB_SECRET_LABEL, RESOURCE_TOKEN_SECRET_LABEL
+from charm import LEGACY_DB_SECRET_LABEL, RESOURCE_TOKEN_SECRET_LABEL, LivepatchCharm
 
 from .conftest import (
     APP_CONTAINER,
@@ -713,9 +713,9 @@ def test_get_resource_token_action_fails_when_machine_token_fetch_fails(context,
     assert "failed to fetch the machine token" in exc_info.value.message
 
 
-def test_emit_updated_config_action_success(context, base_state):
+def test_migrate_reactive_config_action_success(context, base_state):
     """arrange: a leader unit.
-    act: emit-updated-config action with the old reactive charm's exported config.
+    act: migrate-reactive-config action with the old reactive charm's exported config.
     assert: the converted config maps the expected keys/values.
     """
     import pathlib
@@ -726,41 +726,92 @@ def test_emit_updated_config_action_success(context, base_state):
     old_config = (test_data / "old_config.yaml").read_text()
     expected = yaml.safe_load((test_data / "expected_config.yaml").read_text())
 
+    context = testing.Context(LivepatchCharm, app_name="migration-target")
     context.run(
-        context.on.action("emit-updated-config", params={"config-file": old_config}),
+        context.on.action("migrate-reactive-config", params={"config-file": old_config}),
         testing.State(**base_state),
     )
 
     result = context.action_results["result"]
     new_config = yaml.safe_load(result["new-config"])
-    assert new_config == expected
+    assert new_config == {"migration-target": expected["canonical-livepatch-server-k8s"]}
 
 
-def test_emit_updated_config_action_fails_on_invalid_yaml(context, base_state):
+def test_migrate_ops_config_action(context, base_state):
+    """Preserve supported Operator values under the destination app without applying them."""
+    import yaml
+
+    context = testing.Context(LivepatchCharm, app_name="migration-target")
+    state_in = testing.State(**base_state)
+    source = yaml.safe_dump(
+        {
+            "settings": {
+                "server.url-template": {"value": "https://example.com/{filename}"},
+                "server.burst-limit": {"value": 0},
+                "patch-sync.enabled": {"value": False},
+                "auth.basic.users": {"value": ""},
+                "auth.sso.enabled": {"value": True},
+                "unknown.option": {"value": "x"},
+            }
+        }
+    )
+    state_out = context.run(context.on.action("migrate-ops-config", params={"config-file": source}), state_in)
+    result = context.action_results["result"]
+    assert yaml.safe_load(result["new-config"]) == {
+        "migration-target": {
+            "server.url-template": "https://example.com/{filename}",
+            "server.burst-limit": 0,
+            "patch-sync.enabled": False,
+            "auth.basic.users": "",
+        }
+    }
+    assert result["removed-keys"] == ["auth.sso.enabled"]
+    assert result["unrecognized-keys"] == ["unknown.option"]
+    assert state_out.config == state_in.config
+    assert state_out.relations == state_in.relations
+
+
+@pytest.mark.parametrize(
+    "action,key,correct_action",
+    [
+        ("migrate-reactive-config", "server.burst-limit", "migrate-ops-config"),
+        ("migrate-ops-config", "burst_limit", "migrate-reactive-config"),
+    ],
+)
+def test_migration_action_rejects_wrong_source(context, base_state, action, key, correct_action):
+    """Fail rather than silently dropping options from the other source format."""
+    import yaml
+
+    source = yaml.safe_dump({"settings": {key: {"value": 10}}})
+    with pytest.raises(testing.ActionFailed, match=correct_action):
+        context.run(context.on.action(action, params={"config-file": source}), testing.State(**base_state))
+
+
+@pytest.mark.parametrize("action", ["migrate-reactive-config", "migrate-ops-config"])
+def test_migration_action_fails_on_invalid_yaml(context, base_state, action):
     """arrange: a leader unit.
-    act: emit-updated-config action with unparsable YAML.
+    act: either migration action with unparsable YAML.
     assert: the action fails with a clear message.
     """
     with pytest.raises(testing.ActionFailed) as exc_info:
         context.run(
-            context.on.action("emit-updated-config", params={"config-file": "not: valid: yaml: :"}),
+            context.on.action(action, params={"config-file": "not: valid: yaml: :"}),
             testing.State(**base_state),
         )
 
     assert "Failed to parse YAML" in exc_info.value.message
 
 
-def test_emit_updated_config_action_fails_on_non_dict_yaml(context, base_state):
+@pytest.mark.parametrize("action", ["migrate-reactive-config", "migrate-ops-config"])
+def test_migration_action_fails_on_non_dict_yaml(context, base_state, action):
     """arrange: a leader unit.
-    act: emit-updated-config action with valid YAML that isn't a mapping.
+    act: either migration action with valid YAML that isn't a mapping.
     assert: the action fails with a clear message.
     """
     with pytest.raises(testing.ActionFailed) as exc_info:
         context.run(
-            context.on.action("emit-updated-config", params={"config-file": "- just\n- a\n- list\n"}),
+            context.on.action(action, params={"config-file": "- just\n- a\n- list\n"}),
             testing.State(**base_state),
         )
 
     assert "invalid config file format" in exc_info.value.message
-
-
