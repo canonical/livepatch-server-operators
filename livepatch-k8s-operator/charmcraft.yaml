@@ -138,6 +138,7 @@ assumes:
 containers:
   app:
     resource: app-image
+    upstream-source: ghcr.io/canonical/livepatch-server:develop
 peers:
   secret-storage:
     interface: secret-storage
