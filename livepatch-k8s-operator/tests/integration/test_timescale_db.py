@@ -5,11 +5,12 @@
 """Integration tests for MetricsDB functionality."""
 
 import logging
+import pathlib
 
+import jubilant
 import pytest
 from fixtures import deploy_package
-from helpers import ACTIVE_STATUS, APP_NAME, ensure_model
-from pytest_operator.plugin import OpsTest
+from helpers import ACTIVE_STATUS, APP_NAME, wait_for_app_removed, wait_for_apps
 
 logger = logging.getLogger(__name__)
 
@@ -18,109 +19,72 @@ POSTGRESQL_METRICS_CHARM = "postgresql"
 POSTGRESQL_METRICS_CHANNEL = "16/stable"
 POSTGRESQL_METRICS_ENDPOINT = "database"
 METRICS_OFFER_NAME = "postgresql-metrics-offer"
-TEST_NAME = "timescale-db"
 
 
-@pytest.mark.asyncio
-async def test_metrics_db_relation_integration(ops_test: OpsTest):
+@pytest.mark.juju_setup
+def test_metrics_db_relation_integration(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib.Path):
     """Test MetricsDB relation integration using a machine PostgreSQL offer."""
-    k8s_model_name = await ensure_model(TEST_NAME, ops_test, cloud_name="microk8s", cloud_type="k8s")
-    lxd_model_name = await ensure_model(TEST_NAME, ops_test, cloud_name="localhost", cloud_type="lxd")
+    deploy_package(k8s_juju, charm=charm)
 
-    with ops_test.model_context(k8s_model_name):
-        await deploy_package(ops_test)
+    lxd_juju.deploy(
+        POSTGRESQL_METRICS_CHARM,
+        POSTGRESQL_METRICS_APP,
+        channel=POSTGRESQL_METRICS_CHANNEL,
+        base="ubuntu@24.04",
+        num_units=1,
+    )
+    wait_for_apps(lxd_juju, [POSTGRESQL_METRICS_APP], status=ACTIVE_STATUS, timeout=600)
 
-    with ops_test.model_context(lxd_model_name):
-        await ops_test.model.deploy(
-            POSTGRESQL_METRICS_CHARM,
-            application_name=POSTGRESQL_METRICS_APP,
-            channel=POSTGRESQL_METRICS_CHANNEL,
-            base="ubuntu@24.04",
-            num_units=1,
-        )
+    logger.info("Creating application offer for cross-model relation: %s", METRICS_OFFER_NAME)
+    lxd_juju.offer(POSTGRESQL_METRICS_APP, endpoint=POSTGRESQL_METRICS_ENDPOINT, name=METRICS_OFFER_NAME)
 
-        await ops_test.model.wait_for_idle(
-            apps=[POSTGRESQL_METRICS_APP],
-            status=ACTIVE_STATUS,
-            timeout=600,
-        )
+    k8s_juju.consume(f"{lxd_juju.model}.{METRICS_OFFER_NAME}")
+    k8s_juju.integrate(f"{APP_NAME}:metrics-db", METRICS_OFFER_NAME)
 
-        logger.info("Creating application offer for cross-model relation: %s", METRICS_OFFER_NAME)
-        await ops_test.model.create_offer(
-            endpoint=f"{POSTGRESQL_METRICS_APP}:{POSTGRESQL_METRICS_ENDPOINT}",
-            offer_name=METRICS_OFFER_NAME,
-        )
+    wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=300)
 
-    with ops_test.model_context(k8s_model_name):
-        await ops_test.juju("consume", f"{lxd_model_name}.{METRICS_OFFER_NAME}")
-        await ops_test.model.relate(f"{APP_NAME}:metrics-db", METRICS_OFFER_NAME)
-
-        await ops_test.model.wait_for_idle(
-            apps=[APP_NAME],
-            status=ACTIVE_STATUS,
-            timeout=300,
-        )
-
-        status = await ops_test.model.get_status()
-        assert status["applications"][APP_NAME]["status"].status == ACTIVE_STATUS
-        assert len(status["applications"][APP_NAME]["relations"]["metrics-db"]) > 0
+    status = k8s_juju.status()
+    assert status.apps[APP_NAME].app_status.current == ACTIVE_STATUS
+    assert len(status.apps[APP_NAME].relations["metrics-db"]) > 0
 
 
-@pytest.mark.asyncio
-async def test_metrics_db_config_options(ops_test: OpsTest):
+def test_metrics_db_config_options(k8s_juju: jubilant.Juju):
     """Test MetricsDB configuration options."""
-    k8s_model_name = await ensure_model(TEST_NAME, ops_test, cloud_name="microk8s", cloud_type="k8s")
+    k8s_juju.config(
+        APP_NAME,
+        {
+            "timescale-db.connection-pool-max": "25",
+            "timescale-db.connection-lifetime-max": "20m",
+            "timescale-db.work-mem": "64",
+        },
+    )
 
-    with ops_test.model_context(k8s_model_name):
-        await ops_test.model.applications[APP_NAME].set_config(
-            {
-                "timescale-db.connection-pool-max": "25",
-                "timescale-db.connection-lifetime-max": "20m",
-                "timescale-db.work-mem": "64",
-            }
-        )
+    wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=120)
 
-        await ops_test.model.wait_for_idle(
-            apps=[APP_NAME],
-            status=ACTIVE_STATUS,
-            timeout=120,
-        )
-
-        status = await ops_test.model.get_status()
-        assert status["applications"][APP_NAME]["status"].status == ACTIVE_STATUS
+    status = k8s_juju.status()
+    assert status.apps[APP_NAME].app_status.current == ACTIVE_STATUS
 
 
-@pytest.mark.asyncio
-async def test_metrics_db_relation_broken(ops_test: OpsTest):
+def test_metrics_db_relation_broken(k8s_juju: jubilant.Juju):
     """Test behavior when MetricsDB relation is broken."""
-    k8s_model_name = await ensure_model(TEST_NAME, ops_test, cloud_name="microk8s", cloud_type="k8s")
+    k8s_juju.remove_relation(f"{APP_NAME}:metrics-db", METRICS_OFFER_NAME)
 
-    with ops_test.model_context(k8s_model_name):
-        await ops_test.model.applications[APP_NAME].remove_relation("metrics-db", METRICS_OFFER_NAME)
+    wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=300)
 
-        await ops_test.model.wait_for_idle(
-            apps=[APP_NAME],
-            status=ACTIVE_STATUS,
-            timeout=300,
-        )
+    status = k8s_juju.status()
+    assert status.apps[APP_NAME].app_status.current == ACTIVE_STATUS
 
-        status = await ops_test.model.get_status()
-        assert status["applications"][APP_NAME]["status"].status == ACTIVE_STATUS
-
-        relations = status["applications"][APP_NAME].get("relations", {})
-        assert "metrics-db" not in relations or len(relations["metrics-db"]) == 0
+    relations = status.apps[APP_NAME].relations
+    assert "metrics-db" not in relations or len(relations["metrics-db"]) == 0
 
 
-@pytest.mark.asyncio
-async def test_cleanup(ops_test: OpsTest):
+@pytest.mark.juju_teardown
+def test_cleanup(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju):
     """Clean up test artifacts."""
-    k8s_model_name = await ensure_model(TEST_NAME, ops_test, cloud_name="microk8s", cloud_type="k8s")
-    lxd_model_name = await ensure_model(TEST_NAME, ops_test, cloud_name="localhost", cloud_type="lxd")
+    if POSTGRESQL_METRICS_APP in lxd_juju.status().apps:
+        lxd_juju.remove_application(POSTGRESQL_METRICS_APP)
+        wait_for_app_removed(lxd_juju, POSTGRESQL_METRICS_APP)
 
-    with ops_test.model_context(lxd_model_name):
-        if POSTGRESQL_METRICS_APP in ops_test.model.applications:
-            await ops_test.model.remove_application(POSTGRESQL_METRICS_APP, block_until_done=True)
-
-    with ops_test.model_context(k8s_model_name):
-        if APP_NAME in ops_test.model.applications:
-            await ops_test.model.remove_application(APP_NAME, block_until_done=True)
+    if APP_NAME in k8s_juju.status().apps:
+        k8s_juju.remove_application(APP_NAME)
+        wait_for_app_removed(k8s_juju, APP_NAME)

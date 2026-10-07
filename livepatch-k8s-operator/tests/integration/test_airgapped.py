@@ -3,31 +3,43 @@
 # See LICENSE file for licensing details.
 
 import logging
+import pathlib
 
+import jubilant
 import pytest
 import requests
 from fixtures import deploy_package
 from helpers import (
     ACTIVE_STATUS,
     APP_NAME,
+    APP_PORT,
     PRO_AIRGAPPED_SERVER_CHANNEL,
     PRO_AIRGAPPED_SERVER_ENDPOINT,
     PRO_AIRGAPPED_SERVER_NAME,
-    ensure_model,
+    fast_forward,
+    wait_for_apps,
 )
-from pytest_operator.plugin import OpsTest
 
 logger = logging.getLogger(__name__)
 
+OFFER_NAME = "pro-airgapped-server-offer"
 
-@pytest.mark.asyncio
-async def test_airgapped_contracts_integration(ops_test: OpsTest):
+# Since we don't have a fake yet valid Pro token, we use the following
+# override mechanism to bypass the validation step. The config below is
+# taken from happy-path tests of the underlying project.
+MANUAL_SERVER_CONFIG = "QzE0TFpDQXh6MzZ3Nk5oNUVRRHVENmNtTkt0d1duOgogIGFjY291bnRJbmZvOgogICAgY3JlYXRlZEF0OiAiMjAyMi0wNS0xMlQwNjoyNzowM1oiCiAgICBpZDogYUFQWXc3M3hHCiAgICBuYW1lOiBhLmJAZXhhbXBsZS5jb20KICAgIHR5cGU6IHBlcnNvbmFsCiAgY29udHJhY3RJbmZvOgogICAgYWxsb3dhbmNlczoKICAgIC0gbWV0cmljOiB1bml0cwogICAgICB2YWx1ZTogMwogICAgY3JlYXRlZEF0OiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICBjcmVhdGVkQnk6ICIiCiAgICBlZmZlY3RpdmVGcm9tOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICBlZmZlY3RpdmVUbzogIjk5OTktMTItMzFUMDA6MDA6MDBaIgogICAgaWQ6IGNBWC0tb05kCiAgICBpdGVtczoKICAgIC0gY29udHJhY3RJRDogY0FYLS1vTmQKICAgICAgY3JlYXRlZDogIjIwMjItMDUtMTJUMDY6Mjc6MDRaIgogICAgICBlZmZlY3RpdmVGcm9tOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICAgIGVmZmVjdGl2ZVRvOiAiOTk5OS0xMi0zMVQwMDowMDowMFoiCiAgICAgIGV4dGVybmFsSURzOiBudWxsCiAgICAgIGlkOiAzOTYyOTAKICAgICAgbGFzdE1vZGlmaWVkOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICAgIG1ldHJpYzogdW5pdHMKICAgICAgcmVhc29uOiBjb250cmFjdF9jcmVhdGVkCiAgICAgIHZhbHVlOiAzCiAgICBuYW1lOiBhLmJAZXhhbXBsZS5jb20KICAgIG9yaWdpbjogZnJlZQogICAgcHJvZHVjdHM6CiAgICAtIGZyZWUKICAgIHJlc291cmNlRW50aXRsZW1lbnRzOgogICAgLSBhZmZvcmRhbmNlczoKICAgICAgICBhcmNoaXRlY3R1cmVzOgogICAgICAgIC0gYW1kNjQKICAgICAgICAtIHg4Nl82NAogICAgICAgIHNlcmllczoKICAgICAgICAtIHhlbmlhbAogICAgICAgIC0gYmlvbmljCiAgICAgIGRpcmVjdGl2ZXM6CiAgICAgICAgYWRkaXRpb25hbFBhY2thZ2VzOgogICAgICAgIC0gdWJ1bnR1LWNvbW1vbmNyaXRlcmlhCiAgICAgICAgYXB0S2V5OiA5RjkxMkRBREQ5OUVFMUNDNkJGRkZGMjQzQTE4NkU3MzNGNDkxQzQ2CiAgICAgICAgYXB0VVJMOiBodHRwczovL2VzbS51YnVudHUuY29tL2NjCiAgICAgICAgc3VpdGVzOgogICAgICAgIC0geGVuaWFsCiAgICAgICAgLSBiaW9uaWMKICAgICAgZW50aXRsZWQ6IHRydWUKICAgICAgb2JsaWdhdGlvbnM6CiAgICAgICAgZW5hYmxlQnlEZWZhdWx0OiBmYWxzZQogICAgICB0eXBlOiBjYy1lYWw="  # noqa: E501
+
+
+@pytest.mark.juju_setup
+def test_deploy(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib.Path):
     """
     Test the charm integrates with `pro-airgapped-server`.
 
     Note that before running this test the LXD controller should be set as the
     default controller on the client. You can use the `juju switch <CONTROLLER>`
-    command.
+    command. The K8s and LXD cloud names default to `microk8s` and `localhost`;
+    override them with the `JUJU_K8S_CLOUD` and `JUJU_LXD_CLOUD` environment
+    variables (and the K8s storage class with `JUJU_K8S_WORKLOAD_STORAGE`).
 
     Since the `pro-airgapped-server` charm has no K8s version, we need to deploy
     it on a LXD cloud, and then use a cross-model or cross-controller relation
@@ -82,82 +94,50 @@ async def test_airgapped_contracts_integration(ops_test: OpsTest):
        original value (i.e., `https://127.0.0.1:16443`) and restart MicroK8s.
     """
 
-    test_name = "airgapped"
-    k8s_model_name = await ensure_model(test_name, ops_test, cloud_name="microk8s", cloud_type="k8s")
-    lxd_model_name = await ensure_model(test_name, ops_test, cloud_name="localhost", cloud_type="lxd")
+    deploy_package(k8s_juju, charm=charm)
 
-    with ops_test.model_context(k8s_model_name):
-        await deploy_package(ops_test)
+    jammy = "ubuntu@22.04"
+    with fast_forward(lxd_juju):
+        lxd_juju.deploy(
+            PRO_AIRGAPPED_SERVER_NAME,
+            PRO_AIRGAPPED_SERVER_NAME,
+            base=jammy,
+            channel=PRO_AIRGAPPED_SERVER_CHANNEL,
+            num_units=1,
+            config={"manual-server-config": MANUAL_SERVER_CONFIG},
+        )
 
-    with ops_test.model_context(lxd_model_name):
-        jammy = "ubuntu@22.04"
-        async with ops_test.fast_forward():
-            await ops_test.model.deploy(
-                PRO_AIRGAPPED_SERVER_NAME,
-                base=jammy,
-                channel=PRO_AIRGAPPED_SERVER_CHANNEL,
-                application_name=PRO_AIRGAPPED_SERVER_NAME,
-                num_units=1,
-                config={
-                    # Since we don't have a fake yet valid Pro token, we use the following
-                    # override mechanism to bypass the validation step. The config below is
-                    # taken from happy-path tests of the underlying project.
-                    "manual-server-config": "QzE0TFpDQXh6MzZ3Nk5oNUVRRHVENmNtTkt0d1duOgogIGFjY291bnRJbmZvOgogICAgY3JlYXRlZEF0OiAiMjAyMi0wNS0xMlQwNjoyNzowM1oiCiAgICBpZDogYUFQWXc3M3hHCiAgICBuYW1lOiBhLmJAZXhhbXBsZS5jb20KICAgIHR5cGU6IHBlcnNvbmFsCiAgY29udHJhY3RJbmZvOgogICAgYWxsb3dhbmNlczoKICAgIC0gbWV0cmljOiB1bml0cwogICAgICB2YWx1ZTogMwogICAgY3JlYXRlZEF0OiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICBjcmVhdGVkQnk6ICIiCiAgICBlZmZlY3RpdmVGcm9tOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICBlZmZlY3RpdmVUbzogIjk5OTktMTItMzFUMDA6MDA6MDBaIgogICAgaWQ6IGNBWC0tb05kCiAgICBpdGVtczoKICAgIC0gY29udHJhY3RJRDogY0FYLS1vTmQKICAgICAgY3JlYXRlZDogIjIwMjItMDUtMTJUMDY6Mjc6MDRaIgogICAgICBlZmZlY3RpdmVGcm9tOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICAgIGVmZmVjdGl2ZVRvOiAiOTk5OS0xMi0zMVQwMDowMDowMFoiCiAgICAgIGV4dGVybmFsSURzOiBudWxsCiAgICAgIGlkOiAzOTYyOTAKICAgICAgbGFzdE1vZGlmaWVkOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICAgIG1ldHJpYzogdW5pdHMKICAgICAgcmVhc29uOiBjb250cmFjdF9jcmVhdGVkCiAgICAgIHZhbHVlOiAzCiAgICBuYW1lOiBhLmJAZXhhbXBsZS5jb20KICAgIG9yaWdpbjogZnJlZQogICAgcHJvZHVjdHM6CiAgICAtIGZyZWUKICAgIHJlc291cmNlRW50aXRsZW1lbnRzOgogICAgLSBhZmZvcmRhbmNlczoKICAgICAgICBhcmNoaXRlY3R1cmVzOgogICAgICAgIC0gYW1kNjQKICAgICAgICAtIHg4Nl82NAogICAgICAgIHNlcmllczoKICAgICAgICAtIHhlbmlhbAogICAgICAgIC0gYmlvbmljCiAgICAgIGRpcmVjdGl2ZXM6CiAgICAgICAgYWRkaXRpb25hbFBhY2thZ2VzOgogICAgICAgIC0gdWJ1bnR1LWNvbW1vbmNyaXRlcmlhCiAgICAgICAgYXB0S2V5OiA5RjkxMkRBREQ5OUVFMUNDNkJGRkZGMjQzQTE4NkU3MzNGNDkxQzQ2CiAgICAgICAgYXB0VVJMOiBodHRwczovL2VzbS51YnVudHUuY29tL2NjCiAgICAgICAgc3VpdGVzOgogICAgICAgIC0geGVuaWFsCiAgICAgICAgLSBiaW9uaWMKICAgICAgZW50aXRsZWQ6IHRydWUKICAgICAgb2JsaWdhdGlvbnM6CiAgICAgICAgZW5hYmxlQnlEZWZhdWx0OiBmYWxzZQogICAgICB0eXBlOiBjYy1lYWw=",  # noqa: E501
-                },
-            )
+        logger.info(f"Waiting for {PRO_AIRGAPPED_SERVER_NAME}")
+        wait_for_apps(lxd_juju, [PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, timeout=600)
 
-            logger.info(f"Waiting for {PRO_AIRGAPPED_SERVER_NAME}")
-            await ops_test.model.wait_for_idle(
-                apps=[PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, raise_on_blocked=False, timeout=600
-            )
+        logger.info("Creating application offer for cross-model relation: %s", OFFER_NAME)
+        lxd_juju.offer(PRO_AIRGAPPED_SERVER_NAME, endpoint=PRO_AIRGAPPED_SERVER_ENDPOINT, name=OFFER_NAME)
 
-            offer_name = "pro-airgapped-server-offer"
-            logger.info("Creating application offer for cross-model relation: %s", offer_name)
-            await ops_test.model.create_offer(
-                endpoint=f"{PRO_AIRGAPPED_SERVER_NAME}:{PRO_AIRGAPPED_SERVER_ENDPOINT}",
-                application_name=PRO_AIRGAPPED_SERVER_NAME,
-                offer_name=offer_name,
-            )
+    with fast_forward(k8s_juju):
+        logger.info("Creating SaaS")
+        k8s_juju.consume(f"{lxd_juju.model}.{OFFER_NAME}")
+        logger.info("Integrating Livepatch and pro-airgapped-server")
+        k8s_juju.integrate(APP_NAME, OFFER_NAME)
+        logger.info("Waiting for Livepatch")
+        wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=600)
 
-    with ops_test.model_context(k8s_model_name):
-        async with ops_test.fast_forward():
-            logger.info("Creating SaaS")
-            # When using the `ops_test.model.consume` method like this:
-            #
-            #   await ops_test.model.consume(endpoint=f"{lxd_model_name}.{offer_name}")
-            #
-            # We get a `KeyError` saying `ops_test.model.info` has no `username`
-            # key. To make it work we have to specify the username maunually by
-            # picking one of the entries from the `ops_test.model.info.users`
-            # list, which could result in unexpected behavior if there were more
-            # than one.
-            #
-            # Another option is to use the Juju client's `consume` command which
-            # handles this by defaulting to the current user.
-            await ops_test.juju("consume", f"{lxd_model_name}.{offer_name}")
-            logger.info("Integrating Livepatch and pro-airgapped-server")
-            await ops_test.model.relate(APP_NAME, offer_name)
-            logger.info("Waiting for Livepatch")
-            await ops_test.model.wait_for_idle(apps=[APP_NAME], status="active", raise_on_blocked=False, timeout=600)
+    with fast_forward(lxd_juju):
+        logger.info(f"Waiting for {PRO_AIRGAPPED_SERVER_NAME}")
+        wait_for_apps(lxd_juju, [PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, timeout=600)
 
-    with ops_test.model_context(lxd_model_name):
-        async with ops_test.fast_forward():
-            logger.info(f"Waiting for {PRO_AIRGAPPED_SERVER_NAME}")
-            await ops_test.model.wait_for_idle(
-                apps=[PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, raise_on_blocked=False, timeout=600
-            )
 
-    with ops_test.model_context(k8s_model_name):
-        logger.info("Getting Livepatch model status")
-        status = await ops_test.model.get_status()  # noqa: F821
-        logger.info(f"Status: {status}")
-        assert ops_test.model.applications[APP_NAME].status == ACTIVE_STATUS
+def test_airgapped_contracts_integration(k8s_juju: jubilant.Juju):
+    """Test Livepatch reports a healthy contracts integration with `pro-airgapped-server`."""
+    logger.info("Getting Livepatch model status")
+    status = k8s_juju.status()
+    logger.info(f"Status: {status}")
+    assert status.apps[APP_NAME].app_status.current == ACTIVE_STATUS
 
-        app_address = status["applications"][APP_NAME]["units"][f"{APP_NAME}/0"]["address"]
-        url = f"http://{app_address}:8080/debug/status"
-        logger.info("Querying app address: %s", url)
-        r = requests.get(url, timeout=2.0)
-        assert r.status_code == 200
-        body = r.json()
-        logger.info("Output = %s", body)
-        assert body["contracts"]["status"] == "OK"
+    app_address = status.apps[APP_NAME].units[f"{APP_NAME}/0"].address
+    url = f"http://{app_address}:{APP_PORT}/debug/status"
+    logger.info("Querying app address: %s", url)
+    r = requests.get(url, timeout=2.0)
+    assert r.status_code == 200
+    body = r.json()
+    logger.info("Output = %s", body)
+    assert body["contracts"]["status"] == "OK"

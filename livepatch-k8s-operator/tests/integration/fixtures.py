@@ -1,136 +1,121 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+"""Deployment helpers shared by the integration test modules."""
 
-import asyncio
 import logging
+import pathlib
+from typing import Optional
 
-import pytest
-from charm_utils import fetch_charm
+import jubilant
 from helpers import (
     ACTIVE_STATUS,
     APP_NAME,
+    APP_PORT,
     BLOCKED_STATUS,
+    DB_ENDPOINT,
+    LEGACY_DB_ENDPOINT,
     POSTGRESQL_CHANNEL,
     POSTGRESQL_NAME,
+    fast_forward,
     get_unit_url,
-    oci_image,
+    wait_for_apps,
 )
-from pytest_operator.plugin import OpsTest
 
 logger = logging.getLogger(__name__)
 
+JAMMY = "ubuntu@22.04"
 
-@pytest.mark.asyncio
-async def deploy_package(
-    ops_test: OpsTest,
+CHARM_CONFIG = {
+    "patch-storage.type": "postgres",
+    "auth.basic.enabled": True,
+    "contracts.enabled": False,
+    "patch-cache.cache-size": 128,
+    "patch-cache.cache-ttl": "1h",
+    "patch-cache.enabled": True,
+    "patch-sync.enabled": True,
+    "server.burst-limit": 500,
+    "server.concurrency-limit": 50,
+    "server.is-hosted": True,
+    "server.log-level": "info",
+}
+
+
+def deploy_package(
+    juju: jubilant.Juju,
+    charm: Optional[pathlib.Path] = None,
     use_current_stable: bool = False,
-):
+) -> None:
+    """Deploy the application and its dependencies.
+
+    Args:
+        juju: Juju instance operating on the target (K8s) model.
+        charm: Path of the local charm; required unless `use_current_stable`.
+        use_current_stable: if True, the current latest stable release of the charm is
+            deployed (instead of the local charm).
     """
-    Deploy the application and its dependencies.
-
-    :param use_current_stable: if True, the current latest stable release of the
-                               charm is deployed (instead of the charm in the
-                               current working directory)
-    """
-
-    jammy = "ubuntu@22.04"
-    config = {
-        "patch-storage.type": "postgres",
-        "auth.basic.enabled": True,
-        "contracts.enabled": False,
-        "patch-cache.cache-size": 128,
-        "patch-cache.cache-ttl": "1h",
-        "patch-cache.enabled": True,
-        "patch-sync.enabled": True,
-        "server.burst-limit": 500,
-        "server.concurrency-limit": 50,
-        "server.is-hosted": True,
-        "server.log-level": "info",
-    }
-
     if use_current_stable:
         logger.info("Deploying current stable release")
-        deployed_application = ops_test.model.deploy(
-            APP_NAME,
-            config=config,
-            num_units=1,
-            application_name=APP_NAME,
-            base=jammy,
-        )
+        juju.deploy(APP_NAME, APP_NAME, config=CHARM_CONFIG, num_units=1, base=JAMMY)
+        db_endpoint = LEGACY_DB_ENDPOINT
     else:
-        logger.info("Building local charm")
-        charm = await fetch_charm(ops_test)
-        deployed_application = ops_test.model.deploy(
+        assert charm is not None, "charm is required for local deploys"
+        logger.info("Deploying local charm %s", charm)
+        # The `app-image` resource's `upstream-source` default (declared in
+        # charmcraft.yaml's `resources` block) is fetched automatically by Juju,
+        # so we don't need to pass it in explicitly here.
+        juju.deploy(
             charm,
-            config=config,
-            resources=get_charm_resources(),
+            APP_NAME,
+            config=CHARM_CONFIG,
             num_units=1,
-            application_name=APP_NAME,
-            base=jammy,
         )
+        db_endpoint = DB_ENDPOINT
 
-    await asyncio.gather(
-        deployed_application,
-        ops_test.model.deploy(
-            POSTGRESQL_NAME,
-            base=jammy,
-            channel=POSTGRESQL_CHANNEL,
-            trust=True,
-            application_name=POSTGRESQL_NAME,
-        ),
-    )
+    juju.deploy(POSTGRESQL_NAME, POSTGRESQL_NAME, base=JAMMY, channel=POSTGRESQL_CHANNEL, trust=True)
 
-    async with ops_test.fast_forward():
+    with fast_forward(juju):
         logger.info(f"Waiting for {POSTGRESQL_NAME}")
-        await ops_test.model.wait_for_idle(
-            apps=[POSTGRESQL_NAME], status=ACTIVE_STATUS, raise_on_blocked=False, timeout=600
-        )
+        wait_for_apps(juju, [POSTGRESQL_NAME], status=ACTIVE_STATUS, timeout=600)
         logger.info(f"Waiting for {APP_NAME}")
-        await ops_test.model.wait_for_idle(apps=[APP_NAME], status=BLOCKED_STATUS, raise_on_blocked=False, timeout=600)
+        wait_for_apps(juju, [APP_NAME], status=BLOCKED_STATUS, timeout=600)
 
         logger.info("Making relations")
-        await perform_livepatch_integrations(ops_test)
-        await ops_test.model.wait_for_idle(apps=[APP_NAME], status=BLOCKED_STATUS, raise_on_blocked=False, timeout=600)
+        perform_livepatch_integrations(juju, db_endpoint)
+        wait_for_apps(juju, [APP_NAME], status=BLOCKED_STATUS, timeout=600)
 
         logger.info("Setting server.url-template")
-        url = await get_unit_url(ops_test, application=APP_NAME, unit=0, port=8080)
+        url = get_unit_url(juju, application=APP_NAME, unit=0, port=APP_PORT)
         url_template = f"{url}/v1/patches/{{filename}}"
         logger.info(f"Set server.url-template to {url_template}")
-        await ops_test.model.applications[APP_NAME].set_config({"server.url-template": url_template})
+        juju.config(APP_NAME, {"server.url-template": url_template})
 
         # The charm automatically triggers schema upgrade after the integrations are made.
         # So, we should wait for an active state.
         logger.info("Waiting for active idle")
-        await ops_test.model.wait_for_idle(apps=[APP_NAME], status=ACTIVE_STATUS, raise_on_blocked=False, timeout=300)
-        assert ops_test.model.applications[APP_NAME].units[0].workload_status == ACTIVE_STATUS
+        status = wait_for_apps(juju, [APP_NAME], status=ACTIVE_STATUS, timeout=300)
+        assert status.apps[APP_NAME].units[f"{APP_NAME}/0"].workload_status.current == ACTIVE_STATUS
 
 
-async def deploy_package_if_needed(
-    ops_test: OpsTest,
+def deploy_package_if_needed(
+    juju: jubilant.Juju,
+    charm: Optional[pathlib.Path] = None,
     use_current_stable: bool = False,
-):
+) -> None:
     """Deploy the application and its dependencies only if not already deployed."""
-    if APP_NAME in ops_test.model.applications:
+    if APP_NAME in juju.status().apps:
         logger.info("%s already deployed; skipping deploy", APP_NAME)
         return
 
-    await deploy_package(ops_test, use_current_stable=use_current_stable)
+    deploy_package(juju, charm=charm, use_current_stable=use_current_stable)
 
 
-async def perform_livepatch_integrations(ops_test: OpsTest):
-    """Add relations between Livepatch charm and postgresql-k8s.
+def perform_livepatch_integrations(juju: jubilant.Juju, db_endpoint: str = DB_ENDPOINT) -> None:
+    """Integrate the Livepatch charm with postgresql-k8s.
 
     Args:
-        ops_test: PyTest object.
+        juju: Juju instance operating on the target model.
+        db_endpoint: Livepatch's database endpoint name.
     """
     logger.info("Integrating Livepatch and Postgresql")
-    await ops_test.model.relate(f"{APP_NAME}:database", f"{POSTGRESQL_NAME}:database")
-
-
-def get_charm_resources():
-    """Get charm resources dict."""
-    return {
-        "livepatch-server-image": oci_image("./metadata.yaml", "livepatch-server-image"),
-        "livepatch-schema-upgrade-tool-image": oci_image("./metadata.yaml", "livepatch-schema-upgrade-tool-image"),
-    }
+    juju.integrate(f"{APP_NAME}:{db_endpoint}", f"{POSTGRESQL_NAME}:database")

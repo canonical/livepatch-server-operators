@@ -28,9 +28,37 @@ tox -e fmt                    # update your code according to linting rules
 tox -e lint                   # code style
 tox -e unit                   # unit tests
 tox -e integration            # integration tests
-tox -e integration-airpagged  # integration tests for air-gapped deployments
+tox -e integration-ingress    # integration tests for ingress
+tox -e integration-metricsdb  # integration tests for the metrics (TimescaleDB) database
+tox -e integration-airgapped  # integration tests for air-gapped deployments
 tox                           # runs 'lint' and 'unit' environments
 ```
+
+### Integration tests
+
+The integration tests use [Jubilant](https://documentation.ubuntu.com/jubilant/) and
+[pytest-jubilant](https://github.com/canonical/pytest-jubilant). They need a Juju 3.x
+controller, and they don't pack the charm, so pack it first:
+
+```shell
+CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=1 charmcraft pack
+LIVEPATCH_APP_IMAGE=ghcr.io/canonical/livepatch-server:<tag> tox -e integration
+```
+
+Environment variables:
+
+- `LIVEPATCH_APP_IMAGE` (required): OCI image (rock) used for the charm's `app-image` resource.
+  Its `vX.Y.Z` tag is also the expected charm version.
+- `CHARM_PATH` (optional): path to the packed charm. Defaults to the single `*.charm` file in the charm root.
+- `JUJU_K8S_CLOUD` / `JUJU_LXD_CLOUD` (optional, cross-model tests): cloud names, default `microk8s` / `localhost`.
+- `JUJU_K8S_WORKLOAD_STORAGE` (optional): K8s storage class set on the K8s model when the controller runs on LXD,
+  default `microk8s-hostpath`.
+
+Useful pytest-jubilant options (pass them after `--`, e.g. `tox -e integration -- --no-juju-teardown`):
+
+- `--no-juju-teardown`: keep the models (and skip `juju_teardown` tests) for inspection.
+- `--juju-model <prefix>`: use a fixed model-name prefix instead of a random one.
+- `--no-juju-setup`: skip `juju_setup` tests and reuse existing models (requires `--juju-model`).
 
 
 ## Build charm

@@ -3,58 +3,48 @@
 # See LICENSE file for licensing details.
 
 import logging
+import pathlib
 
+import jubilant
 import pytest
 import requests
-from fixtures import deploy_package, fetch_charm, get_charm_resources
-from helpers import ACTIVE_STATUS, APP_NAME
-from pytest_operator.plugin import OpsTest
+from fixtures import deploy_package
+from helpers import ACTIVE_STATUS, APP_NAME, APP_PORT, wait_for_apps
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.asyncio
-async def test_upgrade(ops_test: OpsTest):
-    """Test upgrading from the current stable release works as expected."""
+def _assert_app_is_up(juju: jubilant.Juju) -> None:
+    """Assert the app is active and its debug status endpoint responds."""
+    status = juju.status()
+    logger.info(f"Status: {status}")
+    assert status.apps[APP_NAME].app_status.current == ACTIVE_STATUS
 
-    await deploy_package(ops_test, use_current_stable=True)
+    address = status.apps[APP_NAME].units[f"{APP_NAME}/0"].address
+    url = f"http://{address}:{APP_PORT}/debug/status"
+    logger.info("Querying app address: %s", url)
+    r = requests.get(url, timeout=2.0)
+    assert r.status_code == 200
+    logger.info(f"Output = {r.json()}")
+
+
+@pytest.mark.juju_setup
+def test_deploy_current_stable(juju: jubilant.Juju):
+    """Deploy the current stable release and check it is up."""
+    deploy_package(juju, use_current_stable=True)
 
     logger.info("Getting model status")
-    status = await ops_test.model.get_status()  # noqa: F821
-    logger.info(f"Status: {status}")
-    assert ops_test.model.applications[APP_NAME].status == ACTIVE_STATUS
+    _assert_app_is_up(juju)
 
-    address = status["applications"][APP_NAME]["units"][f"{APP_NAME}/0"]["address"]
-    url = f"http://{address}:8080/debug/status"
-    logger.info("Querying app address: %s", url)
-    r = requests.get(url, timeout=2.0)
-    assert r.status_code == 200
-    logger.info(f"Output = {r.json()}")
 
+def test_upgrade(juju: jubilant.Juju, charm: pathlib.Path):
+    """Test upgrading from the current stable release works as expected."""
     # Deploy the locally built charm and wait for active/idle status
     logger.info("refreshing running application with the new local charm")
-
-    charm = await fetch_charm(ops_test)
-    await ops_test.model.applications[APP_NAME].refresh(
-        path=charm,
-        resources=get_charm_resources(),
-    )
+    juju.refresh(APP_NAME, path=charm)
 
     logger.info("waiting for the upgraded unit to be ready")
-    await ops_test.model.wait_for_idle(
-        apps=[APP_NAME],
-        status=ACTIVE_STATUS,
-        timeout=600,
-    )
+    wait_for_apps(juju, [APP_NAME], status=ACTIVE_STATUS, timeout=600)
 
     logger.info("Getting model status after upgrade")
-    status = await ops_test.model.get_status()  # noqa: F821
-    logger.info(f"Status: {status}")
-    assert ops_test.model.applications[APP_NAME].status == ACTIVE_STATUS
-
-    address = status["applications"][APP_NAME]["units"][f"{APP_NAME}/0"]["address"]
-    url = f"http://{address}:8080/debug/status"
-    logger.info("Querying app address: %s", url)
-    r = requests.get(url, timeout=2.0)
-    assert r.status_code == 200
-    logger.info(f"Output = {r.json()}")
+    _assert_app_is_up(juju)
