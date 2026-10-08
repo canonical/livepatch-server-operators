@@ -31,7 +31,7 @@ MANUAL_SERVER_CONFIG = "QzE0TFpDQXh6MzZ3Nk5oNUVRRHVENmNtTkt0d1duOgogIGFjY291bnRJ
 
 
 @pytest.mark.juju_setup
-def test_deploy(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib.Path):
+def test_deploy(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib.Path, app_image_resource: str):
     """
     Test the charm integrates with `pro-airgapped-server`.
 
@@ -94,7 +94,7 @@ def test_deploy(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib
        original value (i.e., `https://127.0.0.1:16443`) and restart MicroK8s.
     """
 
-    deploy_package(k8s_juju, charm=charm)
+    deploy_package(k8s_juju, charm=charm, app_image_resource=app_image_resource)
 
     jammy = "ubuntu@22.04"
     with fast_forward(lxd_juju):

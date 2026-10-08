@@ -9,7 +9,7 @@ import jubilant
 import pytest
 import requests
 from fixtures import deploy_package
-from helpers import ACTIVE_STATUS, APP_NAME, APP_PORT, wait_for_apps
+from helpers import ACTIVE_STATUS, APP_IMAGE_RESOURCE, APP_NAME, APP_PORT, wait_for_apps
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,13 @@ def test_deploy_current_stable(juju: jubilant.Juju):
     _assert_app_is_up(juju)
 
 
-def test_upgrade(juju: jubilant.Juju, charm: pathlib.Path):
+def test_upgrade(juju: jubilant.Juju, charm: pathlib.Path, app_image_resource: str):
     """Test upgrading from the current stable release works as expected."""
     # Deploy the locally built charm and wait for active/idle status
     logger.info("refreshing running application with the new local charm")
-    juju.refresh(APP_NAME, path=charm)
+    # `juju refresh --path` requires every oci-image resource to be supplied
+    # again, exactly like the initial local deploy does.
+    juju.refresh(APP_NAME, path=charm, resources={APP_IMAGE_RESOURCE: app_image_resource})
 
     logger.info("waiting for the upgraded unit to be ready")
     wait_for_apps(juju, [APP_NAME], status=ACTIVE_STATUS, timeout=600)

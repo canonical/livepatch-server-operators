@@ -43,9 +43,14 @@ LEGACY_DB_ENDPOINT = "database"
 DEFAULT_APP_IMAGE = METADATA.get("resources", {}).get(APP_IMAGE_RESOURCE, {}).get("upstream-source")
 APP_IMAGE = os.environ.get("LIVEPATCH_APP_IMAGE") or DEFAULT_APP_IMAGE
 
-K8S_CLOUD = os.environ.get("JUJU_K8S_CLOUD", "microk8s")
-LXD_CLOUD = os.environ.get("JUJU_LXD_CLOUD", "localhost")
+K8S_CLOUD = os.environ.get("JUJU_K8S_CLOUD")
+LXD_CLOUD = os.environ.get("JUJU_LXD_CLOUD")
 K8S_WORKLOAD_STORAGE = os.environ.get("JUJU_K8S_WORKLOAD_STORAGE", "microk8s-hostpath")
+
+# Cloud types as reported by `juju clouds`, in the order they are preferred when
+# several clouds of the same kind are registered.
+K8S_CLOUD_TYPES = ("kubernetes", "k8s")
+LXD_CLOUD_TYPES = ("lxd",)
 
 DEFAULT_TIMEOUT = 600
 

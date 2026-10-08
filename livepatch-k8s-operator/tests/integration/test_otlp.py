@@ -49,9 +49,9 @@ def _get_published_prometheus_alert_names(juju: jubilant.Juju) -> set:
 
 
 @pytest.mark.juju_setup
-def test_deploy_and_relate_otel_collector(juju: jubilant.Juju, charm: pathlib.Path):
+def test_deploy_and_relate_otel_collector(juju: jubilant.Juju, charm: pathlib.Path, app_image_resource: str):
     """Test that livepatch can relate to the OpenTelemetry Collector over the OTLP interface."""
-    deploy_package_if_needed(juju, charm=charm)
+    deploy_package_if_needed(juju, charm=charm, app_image_resource=app_image_resource)
 
     juju.deploy(OTEL_COLLECTOR_APP, OTEL_COLLECTOR_APP, channel=OTEL_COLLECTOR_CHANNEL, trust=True)
 

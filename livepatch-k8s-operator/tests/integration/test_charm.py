@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.juju_setup
-def test_deploy(juju: jubilant.Juju, charm: pathlib.Path):
+def test_deploy(juju: jubilant.Juju, charm: pathlib.Path, app_image_resource: str):
     """Deploy the charm and its dependencies."""
-    deploy_package(juju, charm=charm)
+    deploy_package(juju, charm=charm, app_image_resource=app_image_resource)
 
 
 def test_application_is_up(juju: jubilant.Juju):

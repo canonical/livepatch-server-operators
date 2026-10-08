@@ -17,6 +17,10 @@ backends:
 environment:
   CONCIERGE: '$(HOST: echo "${CONCIERGE:-concierge-juju3.yaml}")'
   OPCLI_GIT_REF: '$(HOST: echo "${OPCLI_GIT_REF:-main}")'
+  # Credentials for the private `app-image` OCI image. Empty outside CI, in
+  # which case the image is pulled anonymously.
+  REGISTRY_USERNAME: '$(HOST: echo "${GITHUB_ACTOR:-}")'
+  REGISTRY_PASSWORD: '$(HOST: echo "${GITHUB_TOKEN:-}")'
 exclude:
 - .git
 - .tox
@@ -32,6 +36,21 @@ integration-suites:
     backends:
     - integration-test
     auto-discover: true
+    # `app-image` is a private GHCR image, so write a credentials file that the
+    # tests hand to Juju, which turns it into a Kubernetes image pull secret.
+    # Keeping the password in a file keeps it off the pytest command line.
+    prepare: |
+      if [ -n "${REGISTRY_PASSWORD}" ]; then
+        touch /home/ubuntu/.app-image-auth.yaml
+        chmod 0600 /home/ubuntu/.app-image-auth.yaml
+        chown ubuntu:ubuntu /home/ubuntu/.app-image-auth.yaml
+        cat > /home/ubuntu/.app-image-auth.yaml <<EOF
+      username: ${REGISTRY_USERNAME}
+      password: ${REGISTRY_PASSWORD}
+      EOF
+      fi
+    restore: |
+      rm -f /home/ubuntu/.app-image-auth.yaml
     # pytest-jubilant tears the per-module models down by default, so there is
     # no equivalent of pytest-operator's `--keep-models`/`--model` here; pass
     # `--no-juju-teardown`/`--juju-model` locally when you want to keep them.
@@ -40,6 +59,7 @@ integration-suites:
       {% for build in artifacts.charms[0].builds if build.arch == arch %}
       CHARM_PATH={{ build.path }}
       {% endfor %}
+      LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
   livepatch-machine-operator/tests/integration/:
     working-dir: livepatch-machine-operator/
     summary: livepatch-machine-operator integration tests

@@ -10,7 +10,6 @@ from typing import Optional
 import jubilant
 from helpers import (
     ACTIVE_STATUS,
-    APP_IMAGE,
     APP_IMAGE_RESOURCE,
     APP_NAME,
     APP_PORT,
@@ -46,6 +45,7 @@ CHARM_CONFIG = {
 def deploy_package(
     juju: jubilant.Juju,
     charm: Optional[pathlib.Path] = None,
+    app_image_resource: Optional[str] = None,
     use_current_stable: bool = False,
 ) -> None:
     """Deploy the application and its dependencies.
@@ -53,6 +53,8 @@ def deploy_package(
     Args:
         juju: Juju instance operating on the target (K8s) model.
         charm: Path of the local charm; required unless `use_current_stable`.
+        app_image_resource: Value for the `app-image` resource: an image reference, or a
+            path to a Juju OCI credentials file. Required unless `use_current_stable`.
         use_current_stable: if True, the current latest stable release of the charm is
             deployed (instead of the local charm).
     """
@@ -62,8 +64,8 @@ def deploy_package(
         db_endpoint = LEGACY_DB_ENDPOINT
     else:
         assert charm is not None, "charm is required for local deploys"
-        assert APP_IMAGE, f"no OCI image for the {APP_IMAGE_RESOURCE!r} resource; set LIVEPATCH_APP_IMAGE"
-        logger.info("Deploying local charm %s with %s=%s", charm, APP_IMAGE_RESOURCE, APP_IMAGE)
+        assert app_image_resource, f"a {APP_IMAGE_RESOURCE!r} value is required for local deploys"
+        logger.info("Deploying local charm %s", charm)
         # Juju rejects a local charm deploy on a k8s model unless every
         # oci-image resource is supplied explicitly; it does not fall back to
         # the `upstream-source` declared in charmcraft.yaml (that default only
@@ -73,7 +75,7 @@ def deploy_package(
             APP_NAME,
             config=CHARM_CONFIG,
             num_units=1,
-            resources={APP_IMAGE_RESOURCE: APP_IMAGE},
+            resources={APP_IMAGE_RESOURCE: app_image_resource},
         )
         db_endpoint = DB_ENDPOINT
 
@@ -105,6 +107,7 @@ def deploy_package(
 def deploy_package_if_needed(
     juju: jubilant.Juju,
     charm: Optional[pathlib.Path] = None,
+    app_image_resource: Optional[str] = None,
     use_current_stable: bool = False,
 ) -> None:
     """Deploy the application and its dependencies only if not already deployed."""
@@ -112,7 +115,12 @@ def deploy_package_if_needed(
         logger.info("%s already deployed; skipping deploy", APP_NAME)
         return
 
-    deploy_package(juju, charm=charm, use_current_stable=use_current_stable)
+    deploy_package(
+        juju,
+        charm=charm,
+        app_image_resource=app_image_resource,
+        use_current_stable=use_current_stable,
+    )
 
 
 def perform_livepatch_integrations(juju: jubilant.Juju, db_endpoint: str = DB_ENDPOINT) -> None:

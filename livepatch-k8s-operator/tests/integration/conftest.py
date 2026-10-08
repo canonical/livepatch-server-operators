@@ -7,14 +7,33 @@ import json
 import logging
 import os
 import pathlib
-from typing import Iterator
+from typing import Dict, Iterable, Iterator, Optional
 
 import jubilant
 import pytest
 import pytest_jubilant
-from helpers import K8S_CLOUD, K8S_WORKLOAD_STORAGE, LXD_CLOUD
+import yaml
+from helpers import APP_IMAGE, K8S_CLOUD, K8S_CLOUD_TYPES, K8S_WORKLOAD_STORAGE, LXD_CLOUD, LXD_CLOUD_TYPES
 
 logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(scope="session")
+def app_image_resource(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Return the value to pass for the charm's `app-image` resource."""
+    auth_path = os.environ.get("LIVEPATCH_APP_IMAGE_AUTH")
+    if not auth_path or not pathlib.Path(auth_path).is_file():
+        logger.info("Using %s as the app-image resource", APP_IMAGE)
+        return APP_IMAGE
+
+    auth = yaml.safe_load(pathlib.Path(auth_path).read_text()) or {}
+    assert auth.get("username") and auth.get("password"), f"{auth_path} must define username and password"
+
+    path = tmp_path_factory.mktemp("app-image") / "resource.yaml"
+    path.write_text(yaml.safe_dump({"registrypath": APP_IMAGE, **auth}))
+    path.chmod(0o600)
+    logger.info("Using registry credentials from %s for %s", auth_path, APP_IMAGE)
+    return str(path)
 
 
 @pytest.fixture(scope="session")
@@ -57,18 +76,54 @@ def _resolve_charm_path(charm_path: str) -> pathlib.Path:
     return (cwd / path).resolve()
 
 
+def _controller_info(juju: jubilant.Juju) -> tuple:
+    """Return the (name, details) of the current controller.
+
+    `show-controller` is used rather than `show-model` so that this works
+    before any model exists.
+    """
+    info = json.loads(juju.cli("show-controller", "--format=json", include_model=False))
+    name = next(iter(info))
+    return name, info[name]
+
+
+def _controller_clouds(juju: jubilant.Juju) -> Dict[str, dict]:
+    """Return the clouds known to the current controller, keyed by cloud name."""
+    name, _ = _controller_info(juju)
+    return json.loads(juju.cli("clouds", "--controller", name, "--format=json", include_model=False))
+
+
 def _controller_cloud_type(juju: jubilant.Juju) -> str:
-    """Return the cloud type (e.g. "lxd", "k8s") of the controller hosting the given model."""
-    model_info = json.loads(juju.cli("show-model", "--format=json"))
-    controller = next(iter(model_info.values()))["controller-name"]
-    controller_info = json.loads(juju.cli("show-controller", controller, "--format=json", include_model=False))
-    cloud = controller_info[controller]["details"]["cloud"]
-    cloud_info = json.loads(
-        juju.cli("show-cloud", cloud, "--controller", controller, "--format=json", include_model=False)
+    """Return the cloud type (e.g. "lxd", "k8s") of the cloud the controller runs on."""
+    _, details = _controller_info(juju)
+    cloud = details["details"]["cloud"]
+    return _controller_clouds(juju).get(cloud, {}).get("type", "")
+
+
+def _find_cloud(juju: jubilant.Juju, cloud_types: Iterable[str], override: Optional[str]) -> str:
+    """Return the name of a cloud of one of `cloud_types` known to the controller.
+
+    `override` (`JUJU_K8S_CLOUD`/`JUJU_LXD_CLOUD`) always wins. Otherwise the
+    cloud is discovered, because its name is not predictable: `concierge`
+    registers Canonical K8s as `k8s`, while a local MicroK8s install registers
+    as `microk8s`. `juju add-model` resolves the cloud against the controller,
+    so only the controller's clouds are considered.
+    """
+    if override:
+        return override
+
+    clouds = _controller_clouds(juju)
+    matches = [name for name, info in clouds.items() if info.get("type") in cloud_types]
+    found = {name: info.get("type") for name, info in clouds.items()}
+    assert matches, (
+        f"the controller has no cloud of type {tuple(cloud_types)} "
+        f"(found: {found}); set JUJU_K8S_CLOUD/JUJU_LXD_CLOUD"
     )
-    if "type" not in cloud_info and cloud in cloud_info:
-        cloud_info = cloud_info[cloud]
-    return cloud_info.get("type", "")
+    # Prefer a deterministic name when several clouds of the same type exist.
+    for preferred in (*cloud_types, "microk8s", "localhost"):
+        if preferred in matches:
+            return preferred
+    return sorted(matches)[0]
 
 
 @pytest.fixture(scope="module")
@@ -79,7 +134,7 @@ def k8s_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juj
     credential name. If model creation fails due to credentials, pre-create the
     model with `juju add-model <name> <cloud> --credential <cloud>`; it will be reused.
     """
-    juju = juju_factory.get_juju(suffix="k8s", cloud=K8S_CLOUD)
+    juju = juju_factory.get_juju(suffix="k8s", cloud=_find_cloud(jubilant.Juju(), K8S_CLOUD_TYPES, K8S_CLOUD))
 
     # When adding a K8s cloud to a LXD controller, we need to update the
     # workload storage parameter to a storage class defined in the K8s cluster,
@@ -104,4 +159,4 @@ def k8s_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juj
 @pytest.fixture(scope="module")
 def lxd_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juju]:
     """Return a Juju instance for a temporary model on the LXD cloud (for cross-model tests)."""
-    yield juju_factory.get_juju(suffix="lxd", cloud=LXD_CLOUD)
+    yield juju_factory.get_juju(suffix="lxd", cloud=_find_cloud(jubilant.Juju(), LXD_CLOUD_TYPES, LXD_CLOUD))

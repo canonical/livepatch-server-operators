@@ -22,9 +22,11 @@ METRICS_OFFER_NAME = "postgresql-metrics-offer"
 
 
 @pytest.mark.juju_setup
-def test_metrics_db_relation_integration(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib.Path):
+def test_metrics_db_relation_integration(
+    k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib.Path, app_image_resource: str
+):
     """Test MetricsDB relation integration using a machine PostgreSQL offer."""
-    deploy_package(k8s_juju, charm=charm)
+    deploy_package(k8s_juju, charm=charm, app_image_resource=app_image_resource)
 
     lxd_juju.deploy(
         POSTGRESQL_METRICS_CHARM,
