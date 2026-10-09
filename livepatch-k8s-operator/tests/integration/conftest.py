@@ -7,13 +7,23 @@ import json
 import logging
 import os
 import pathlib
+import subprocess
 from typing import Dict, Iterable, Iterator, Optional
 
 import jubilant
 import pytest
 import pytest_jubilant
 import yaml
-from helpers import APP_IMAGE, K8S_CLOUD, K8S_CLOUD_TYPES, K8S_WORKLOAD_STORAGE, LXD_CLOUD, LXD_CLOUD_TYPES
+from helpers import (
+    APP_IMAGE,
+    CROSS_MODEL_CONTROLLER,
+    K8S_CLOUD,
+    K8S_CLOUD_TYPES,
+    K8S_SECONDARY_CLOUD,
+    K8S_WORKLOAD_STORAGE,
+    LXD_CLOUD,
+    LXD_CLOUD_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,86 +86,34 @@ def _resolve_charm_path(charm_path: str) -> pathlib.Path:
     return (cwd / path).resolve()
 
 
-def _controller_info(juju: jubilant.Juju) -> tuple:
-    """Return the (name, details) of the current controller.
+def _controller_clouds(controller: str) -> Dict[str, dict]:
+    """Return the clouds known to `controller`, keyed by cloud name."""
+    juju = jubilant.Juju()
+    return json.loads(juju.cli("clouds", "--controller", controller, "--format=json", include_model=False))
 
-    `show-controller` is used rather than `show-model` so that this works
-    before any model exists.
+
+def _controller_cloud_type(controller: str) -> str:
+    """Return the cloud type (e.g. "lxd", "k8s") that `controller` runs on."""
+    juju = jubilant.Juju()
+    info = json.loads(juju.cli("show-controller", controller, "--format=json", include_model=False))
+    cloud = info[controller]["details"]["cloud"]
+    return _controller_clouds(controller).get(cloud, {}).get("type", "")
+
+
+def _run_juju(*args: str, stdin: Optional[str] = None) -> int:
+    """Run a Juju CLI command for test setup, logging its combined output.
+
+    Returns the exit code without raising. Used for the best-effort cloud
+    provisioning steps, whose output we always want captured in the CI logs.
     """
-    info = json.loads(juju.cli("show-controller", "--format=json", include_model=False))
-    name = next(iter(info))
-    return name, info[name]
+    proc = subprocess.run(["juju", *args], input=stdin, capture_output=True, encoding="utf-8")
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    logger.info("juju %s (exit=%s)\n%s", " ".join(args), proc.returncode, output)
+    return proc.returncode
 
 
-def _controller_clouds(juju: jubilant.Juju) -> Dict[str, dict]:
-    """Return the clouds known to the current controller, keyed by cloud name."""
-    name, _ = _controller_info(juju)
-    return json.loads(juju.cli("clouds", "--controller", name, "--format=json", include_model=False))
-
-
-def _controller_cloud_type(juju: jubilant.Juju) -> str:
-    """Return the cloud type (e.g. "lxd", "k8s") of the cloud the controller runs on."""
-    _, details = _controller_info(juju)
-    cloud = details["details"]["cloud"]
-    return _controller_clouds(juju).get(cloud, {}).get("type", "")
-
-
-def _ensure_lxd_cloud(juju: jubilant.Juju) -> None:
-    """Ensure an LXD cloud is registered with the current controller.
-
-    In CI environments (e.g. concierge), the controller is bootstrapped on k8s
-    and initially only knows about the k8s cloud, even though LXD is installed on
-    the host. Adding 'localhost' (type lxd) to the controller enables cross-model
-    relations between k8s and machine charms under the same controller.
-    """
-    clouds = _controller_clouds(juju)
-    if any(info.get("type") in LXD_CLOUD_TYPES for info in clouds.values()):
-        return
-
-    controller, _ = _controller_info(juju)
-    logger.info("Registering LXD cloud 'localhost' with controller %s", controller)
-    try:
-        juju.cli("add-cloud", "--controller", controller, "localhost", include_model=False)
-    except Exception as exc:
-        logger.warning("Could not add LXD cloud 'localhost' to controller %s: %s", controller, exc)
-        return
-
-    _ensure_lxd_credential(juju, controller)
-
-
-def _ensure_lxd_credential(juju: jubilant.Juju, controller: str) -> None:
-    """Upload a credential for the 'localhost' LXD cloud to the controller.
-
-    `juju add-cloud --controller` only copies the cloud definition. concierge
-    adds LXD as a client-side cloud but writes no credential (its LXD provider's
-    credentials are empty), so without this step `juju add-model ... localhost`
-    fails with `cloud credential "localhost/admin/localhost" not found`.
-
-    `autoload-credentials` detects the local LXD setup (generating a client
-    certificate and trusting it with the LXD daemon) and, when given both
-    `--client` and `--controller`, uploads the resulting credential to the
-    controller. The interactive prompts are answered over stdin: select the
-    first detected credential, accept the default cloud name (empty line), then
-    quit the loop with `q`, which triggers the controller upload. This assumes
-    LXD's 'localhost' is the only auto-detected credential, which holds on the
-    self-hosted CI runners.
-    """
-    logger.info("Uploading LXD credential to controller %s", controller)
-    try:
-        juju.cli(
-            "autoload-credentials",
-            "--client",
-            "--controller",
-            controller,
-            include_model=False,
-            stdin="1\n\nq\n",
-        )
-    except Exception as exc:
-        logger.warning("Could not upload an LXD credential to controller %s: %s", controller, exc)
-
-
-def _find_cloud(juju: jubilant.Juju, cloud_types: Iterable[str], override: Optional[str]) -> str:
-    """Return the name of a cloud of one of `cloud_types` known to the controller.
+def _find_cloud(controller: str, cloud_types: Iterable[str], override: Optional[str]) -> str:
+    """Return the name of a cloud of one of `cloud_types` known to `controller`.
 
     `override` (`JUJU_K8S_CLOUD`/`JUJU_LXD_CLOUD`) always wins. Otherwise the
     cloud is discovered, because its name is not predictable: `concierge`
@@ -166,11 +124,11 @@ def _find_cloud(juju: jubilant.Juju, cloud_types: Iterable[str], override: Optio
     if override:
         return override
 
-    clouds = _controller_clouds(juju)
+    clouds = _controller_clouds(controller)
     matches = [name for name, info in clouds.items() if info.get("type") in cloud_types]
     found = {name: info.get("type") for name, info in clouds.items()}
     assert matches, (
-        f"the controller has no cloud of type {tuple(cloud_types)} "
+        f"controller {controller!r} has no cloud of type {tuple(cloud_types)} "
         f"(found: {found}); set JUJU_K8S_CLOUD/JUJU_LXD_CLOUD"
     )
     # Prefer a deterministic name when several clouds of the same type exist.
@@ -180,38 +138,81 @@ def _find_cloud(juju: jubilant.Juju, cloud_types: Iterable[str], override: Optio
     return sorted(matches)[0]
 
 
+def _ensure_k8s_cloud(controller: str) -> None:
+    """Ensure a K8s cloud is registered with the cross-model controller.
+
+    The cross-model tests run on an LXD-bootstrapped controller so that the
+    `localhost` LXD credential is native. Cross-model relations require both
+    models under one controller, so the K8s charm's cloud has to live there too.
+    The local K8s cluster - taken from the kubeconfig that concierge writes - is
+    registered as a secondary cloud with `juju add-k8s`. This mirrors the
+    standalone repo's CI, which ran `juju add-cloud microk8s --controller
+    <lxd-controller> --credential microk8s`.
+    """
+    if any(info.get("type") in K8S_CLOUD_TYPES for info in _controller_clouds(controller).values()):
+        return
+    logger.info("Registering K8s cloud %r with controller %s", K8S_SECONDARY_CLOUD, controller)
+    _run_juju("add-k8s", K8S_SECONDARY_CLOUD, "--controller", controller)
+
+
+def _k8s_workload_storage() -> str:
+    """Return the storage class for the cross-model K8s workload model.
+
+    A K8s cloud added to an LXD controller is not given a usable default storage
+    class, so one must be set explicitly. Check out these bug reports for more
+    context:
+      - https://bugs.launchpad.net/juju/+bug/2031216
+      - https://bugs.launchpad.net/juju/+bug/2077426
+    `JUJU_K8S_WORKLOAD_STORAGE` wins; otherwise the cluster's default storage
+    class is discovered via kubectl, falling back to `microk8s-hostpath`.
+    """
+    if K8S_WORKLOAD_STORAGE:
+        return K8S_WORKLOAD_STORAGE
+    try:
+        out = subprocess.run(
+            ["kubectl", "get", "storageclass", "-o", "json"],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+        items = json.loads(out).get("items", [])
+        for item in items:
+            annotations = item.get("metadata", {}).get("annotations", {})
+            if annotations.get("storageclass.kubernetes.io/is-default-class") == "true":
+                return item["metadata"]["name"]
+        if items:
+            return items[0]["metadata"]["name"]
+    except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+        logger.warning("Could not discover a K8s storage class: %s", exc)
+    return "microk8s-hostpath"
+
+
 @pytest.fixture(scope="module")
 def k8s_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juju]:
-    """Return a Juju instance for a temporary model on the K8s cloud (for cross-model tests).
+    """Return a Juju instance for a temporary K8s model on the cross-model controller.
 
-    Note: unlike pytest-operator's old `ensure_model`, `get_juju` doesn't accept a
-    credential name. If model creation fails due to credentials, pre-create the
-    model with `juju add-model <name> <cloud> --credential <cloud>`; it will be reused.
+    The cross-model controller is bootstrapped on LXD (so the `localhost`
+    credential is native), and the local K8s cluster is added to it as a
+    secondary cloud. Because a K8s cloud added to an LXD controller has no usable
+    default storage class, the workload storage class is set explicitly.
     """
-    juju = juju_factory.get_juju(suffix="k8s", cloud=_find_cloud(jubilant.Juju(), K8S_CLOUD_TYPES, K8S_CLOUD))
+    controller = CROSS_MODEL_CONTROLLER
+    _ensure_k8s_cloud(controller)
+    cloud = _find_cloud(controller, K8S_CLOUD_TYPES, K8S_CLOUD)
+    juju = juju_factory.get_juju(suffix="k8s", controller=controller, cloud=cloud)
 
-    # When adding a K8s cloud to a LXD controller, we need to update the
-    # workload storage parameter to a storage class defined in the K8s cluster,
-    # otherwise the model in unable to deploy charms. Check out these bug
-    # reports for more context:
-    #   - https://bugs.launchpad.net/juju/+bug/2031216
-    #   - https://bugs.launchpad.net/juju/+bug/2077426
-    #
-    # Note: this repo's own CI (concierge-juju3.yaml) bootstraps the controller
-    # on the K8s cloud and only adds LXD as a secondary cloud, so this branch is
-    # a no-op there. It still matters for the common local-dev topology (an
-    # LXD-hosted controller with a K8s cloud, e.g. microk8s, added to it), which
-    # is why the check is dynamic rather than hardcoded.
-    if _controller_cloud_type(juju) == "lxd":
-        # You can get a list of available storage classes on your MicroK8s
-        # cluster by:
-        #   microk8s kubectl get storageclass
-        juju.model_config({"workload-storage": K8S_WORKLOAD_STORAGE})
+    if _controller_cloud_type(controller) == "lxd":
+        juju.model_config({"workload-storage": _k8s_workload_storage()})
     yield juju
 
 
 @pytest.fixture(scope="module")
 def lxd_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juju]:
-    """Return a Juju instance for a temporary model on the LXD cloud (for cross-model tests)."""
-    _ensure_lxd_cloud(jubilant.Juju())
-    yield juju_factory.get_juju(suffix="lxd", cloud=_find_cloud(jubilant.Juju(), LXD_CLOUD_TYPES, LXD_CLOUD))
+    """Return a Juju instance for a temporary LXD model on the cross-model controller.
+
+    The cross-model controller is bootstrapped on LXD, so the `localhost`
+    credential is native and no cloud/credential provisioning is required here.
+    """
+    controller = CROSS_MODEL_CONTROLLER
+    cloud = _find_cloud(controller, LXD_CLOUD_TYPES, LXD_CLOUD)
+    yield juju_factory.get_juju(suffix="lxd", controller=controller, cloud=cloud)
