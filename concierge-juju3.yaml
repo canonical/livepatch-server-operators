@@ -9,21 +9,20 @@ providers:
   lxd:
     enable: true
     bootstrap: true
-  k8s:
+  microk8s:
     enable: true
     # Not bootstrapped: the single controller is on LXD (so the `localhost`
-    # credential is native), and the K8s cluster is added to it as a secondary
-    # cloud by the test fixtures. Enabling the provider still installs and forms
-    # the K8s cluster and writes the kubeconfig that `juju add-k8s` consumes.
+    # credential is native), and MicroK8s is added to it as a secondary cloud by
+    # the test fixtures. Enabling the provider still installs MicroK8s, enables
+    # the addons, and writes a kubeconfig (whose API server is the routable node
+    # IP) that `juju add-k8s` consumes.
     bootstrap: false
-    bootstrap-constraints:
-      root-disk: "2G"
-    features:
-      load-balancer:
-        l2-mode: "true"
-        cidrs: "10.43.45.0/28"
-      local-storage: {}
-      network: {}
+    addons:
+      - hostpath-storage
+      - dns
+      - rbac
+      - ingress
+      - metallb
 
 host:
   snaps:
