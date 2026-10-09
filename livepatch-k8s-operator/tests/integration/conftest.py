@@ -118,6 +118,40 @@ def _ensure_lxd_cloud(juju: jubilant.Juju) -> None:
         juju.cli("add-cloud", "--controller", controller, "localhost", include_model=False)
     except Exception as exc:
         logger.warning("Could not add LXD cloud 'localhost' to controller %s: %s", controller, exc)
+        return
+
+    _ensure_lxd_credential(juju, controller)
+
+
+def _ensure_lxd_credential(juju: jubilant.Juju, controller: str) -> None:
+    """Upload a credential for the 'localhost' LXD cloud to the controller.
+
+    `juju add-cloud --controller` only copies the cloud definition. concierge
+    adds LXD as a client-side cloud but writes no credential (its LXD provider's
+    credentials are empty), so without this step `juju add-model ... localhost`
+    fails with `cloud credential "localhost/admin/localhost" not found`.
+
+    `autoload-credentials` detects the local LXD setup (generating a client
+    certificate and trusting it with the LXD daemon) and, when given both
+    `--client` and `--controller`, uploads the resulting credential to the
+    controller. The interactive prompts are answered over stdin: select the
+    first detected credential, accept the default cloud name (empty line), then
+    quit the loop with `q`, which triggers the controller upload. This assumes
+    LXD's 'localhost' is the only auto-detected credential, which holds on the
+    self-hosted CI runners.
+    """
+    logger.info("Uploading LXD credential to controller %s", controller)
+    try:
+        juju.cli(
+            "autoload-credentials",
+            "--client",
+            "--controller",
+            controller,
+            include_model=False,
+            stdin="1\n\nq\n",
+        )
+    except Exception as exc:
+        logger.warning("Could not upload an LXD credential to controller %s: %s", controller, exc)
 
 
 def _find_cloud(juju: jubilant.Juju, cloud_types: Iterable[str], override: Optional[str]) -> str:
