@@ -1,6 +1,8 @@
 venv/
 build/
 *.charm
+cos_custom/
+src/livepatch_common/
 
 .coverage
 __pycache__/

@@ -11,16 +11,24 @@ contracts address, and re-publishing this unit's outgoing databags.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
-from urllib.parse import ParseResult, quote, urlunparse
+from typing import Any, Optional, Tuple
 
-from ops.model import ModelError, Relation, RelationDataContent
+from livepatch_common.relations import (
+    build_database_uri,
+    cve_source_url,
+    otlp_metrics_endpoint as otlp_endpoint_from_data,
+    pro_airgapped_server_address as airgapped_address_from_data,
+)
+from ops.model import ModelError, Relation
 
 logger = logging.getLogger(__name__)
 
-DATABASE_NAME = "livepatch"
 DATABASE_RELATION = "database"
 DATABASE_RELATION_LEGACY = "database-legacy"
+METRICS_DB_NAME = "livepatch-metrics-db"
+METRICS_DB_RELATION = "metrics-db"
+CVE_CATALOG_RELATION = "cve-catalog"
+SEND_OTLP_RELATION = "send-otlp"
 PRO_AIRGAPPED_SERVER_RELATION = "pro-airgapped-server"
 WEBSITE_RELATION = "website"
 PEER_RELATION = "livepatch"
@@ -70,23 +78,6 @@ def check_database_relations(charm: Any) -> None:
         )
 
 
-def build_database_uri(username: str, password: str, endpoints: str) -> str:
-    """Compose a PostgreSQL connection string from database relation data.
-
-    Args:
-        username: the database username.
-        password: the database password.
-        endpoints: a comma-separated list of endpoints; the first is used.
-
-    Returns:
-        The composed connection string.
-    """
-    endpoint = endpoints.split(",", 1)[0]
-    # Reserved URI characters in either credential (`@`, `:`, `/`, ...) would
-    # otherwise be misparsed as part of the URI's structure.
-    return f"postgresql://{quote(username, safe='')}:{quote(password, safe='')}@{endpoint}/{DATABASE_NAME}"
-
-
 def database_uri(database: Any) -> Optional[str]:
     """Read the connection string from the database relation.
 
@@ -113,19 +104,53 @@ def database_uri(database: Any) -> Optional[str]:
     return None
 
 
-def strip_query_parameters(uri: str) -> str:
-    """Drop query parameters from a PostgreSQL URI.
-
-    Parameters such as `fallback_application_name` make the schema tool fail
-    with `unrecognized configuration parameter (SQLSTATE 42704)`.
+def metrics_db_uri(metrics_db: Any) -> Optional[str]:
+    """Read the connection string from the metrics-db relation.
 
     Args:
-        uri: the connection string to clean up.
+        metrics_db: the `DatabaseRequires` instance for the metrics database.
 
     Returns:
-        The connection string without its query parameters.
+        The connection string, or None while the relation data is incomplete.
     """
-    return uri.split("?", 1)[0]
+    for fields in metrics_db.fetch_relation_data().values():
+        username = fields.get("username")
+        password = fields.get("password")
+        endpoints = fields.get("endpoints")
+        if username and password and endpoints:
+            return build_database_uri(username, password, endpoints, db_name=METRICS_DB_NAME)
+    return None
+
+
+def cve_catalog_url(charm: Any) -> Optional[str]:
+    """Read the CVE catalog service address, if related.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        The CVE catalog service URL published by the remote application, or
+        None when unavailable.
+    """
+    related = charm.model.relations.get(CVE_CATALOG_RELATION, None)
+    if not related:
+        return None
+    return cve_source_url(related[0].data.get(related[0].app, {}))
+
+
+def otel_metrics_endpoint(charm: Any) -> Optional[Tuple[str, str, bool]]:
+    """Read the OTLP metrics push endpoint from the send-otlp relation, if related.
+
+    Args:
+        charm: the charm to inspect.
+
+    Returns:
+        A tuple of (endpoint, protocol, insecure), or None when unavailable.
+    """
+    related = charm.model.relations.get(SEND_OTLP_RELATION, None)
+    if not related:
+        return None
+    return otlp_endpoint_from_data(related[0].data.get(related[0].app, {}))
 
 
 def pro_airgapped_url(charm: Any) -> Optional[str]:
@@ -159,30 +184,10 @@ def _available_pro_airgapped_server_address(relation: Relation) -> Optional[str]
         data = relation.data.get(unit, None)
         if not data:
             continue
-        address = _extract_pro_airgapped_server_address(data)
+        address = airgapped_address_from_data(data)
         if address:
             return address
     return None
-
-
-def _extract_pro_airgapped_server_address(data: RelationDataContent) -> Optional[str]:
-    """Extract the Pro air-gapped address from a unit databag.
-
-    Args:
-        data: the remote unit's databag.
-
-    Returns:
-        The contracts server URL, or None if the databag is not valid.
-    """
-    hostname = data.get("hostname")
-    if not hostname:
-        logger.error("empty 'hostname' value in pro-airgapped relation data")
-        return None
-
-    scheme = data.get("scheme") or "http"
-    port = data.get("port")
-    netloc = hostname + (f":{port}" if port else "")
-    return urlunparse(ParseResult(scheme, netloc, "", "", "", ""))
 
 
 def push_outgoing(charm: Any, port: str) -> None:

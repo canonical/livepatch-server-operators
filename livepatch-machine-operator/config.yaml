@@ -9,7 +9,6 @@ options:
     description: The servers log level.
     type: string
   server.url-template:
-    default: ""
     description: |
       Template string to use when making URLs for giving back to the client.
 
@@ -48,16 +47,14 @@ options:
       Note: Do not enable this option if the server.url-template is configured as the
       Livepatch-server as this will result in a redirect loop.
     type: boolean
-
-  cloud-delay.enabled:
-    default: false
+  server.is-hosted:
+    default: False
     description: |
-      Whether to enable the delayed roll-out of patches based on a client's cloud.
+      Defines whether the server will act as an on-prem server
+      (i.e. fetching patches from the hosted server), or will act as a
+      hosted server.
     type: boolean
-  cloud-delay.default-delay-hours:
-    description: "Default delay hours for clouds/regions/azs without predefined delay hours."
-    type: int
-    default: 0
+
   auth.basic.enabled:
     default: false
     description: |
@@ -79,9 +76,67 @@ options:
       it when both are set. Must be set to the URI of a Juju secret containing a `value`
       key with the comma separated "user:password-hash" pairs, e.g.:
         juju add-secret livepatch-basic-users value="user:hash"
-        juju grant-secret livepatch-basic-users canonical-livepatch-server
-        juju config canonical-livepatch-server auth.basic.users-secret=<secret-uri>
+        juju grant-secret livepatch-basic-users <app-name>
+        juju config <app-name> auth.basic.users-secret=<secret-uri>
     type: secret
+  auth.oauth.enabled:
+    default: false
+    description: 'Whether OAuth 2.0 bearer token authentication backed by Canonical IdP
+      should be enabled for admin API access.'
+    type: boolean
+  auth.oauth.issuer:
+    description: 'Expected JWT issuer claim value for OAuth authentication.'
+    type: string
+  auth.oauth.audience:
+    description: 'Expected JWT audience claim value for OAuth authentication.'
+    type: string
+  auth.oauth.sig-algs:
+    default: RS256
+    description: |
+      Comma separated list of accepted JWT signature algorithms.
+      Supported values: RS256, RS384, RS512, ES256, ES384, ES512.
+    type: string
+  auth.oauth.allowed-cidp-groups:
+    description: 'Comma separated list of CIdP group names allowed to access the admin
+      API when OAuth is enabled.'
+    type: string
+  auth.oauth.jwks.url:
+    description: 'URL of the JWKS endpoint used to fetch signing keys for JWT verification.'
+    type: string
+  auth.oauth.jwks.refresh-interval:
+    default: 1h
+    description: 'Interval for refreshing the JWKS key set.'
+    type: string
+  auth.oauth.jwks.refresh-unknown-kid:
+    default: true
+    description: 'Refresh JWKS on-demand when a token contains an unknown key ID (kid).'
+    type: boolean
+  auth.oauth.jwks.refresh-unknown-kid-limit:
+    default: 10m
+    description: 'Minimum interval between on-demand JWKS refresh attempts for unknown
+      key IDs.'
+    type: string
+  auth.oauth.jwks.refresh-unknown-kid-max-wait:
+    default: 1m
+    description: 'Maximum time to wait for an in-flight on-demand JWKS refresh.'
+    type: string
+  auth.oauth.proxy.enabled:
+    default: false
+    description: Whether or not to use proxy for requests to OAuth provider.
+    type: boolean
+  auth.oauth.proxy.http:
+    default: ''
+    description: A comma separated list of HTTP proxies to query the OAuth provider.
+    type: string
+  auth.oauth.proxy.https:
+    default: ''
+    description: A comma separated list of HTTPS proxies to query the OAuth provider.
+    type: string
+  auth.oauth.proxy.no-proxy:
+    default: ''
+    description: 'A comma separated list of domains, IP CIDRs and/or ports to block
+      when querying the OAuth provider.'
+    type: string
   contracts.enabled:
     default: false
     description: Whether use of the contracts service is enabled.
@@ -108,7 +163,8 @@ options:
     description: |
       A certificate of the CA that issued the certificate of the contracts service.
       Use 'include-base64://' in a bundle to include a certificate. Otherwise,
-      pass a base64-encoded certificate (base64 of "-----BEGIN" to "-----END").
+      pass a base64-encoded certificate (base64 of "-----BEGIN" to "-----END")
+      as a config option in a Juju CLI invocation.
 
       Deprecated: this option is stored in plain text in Juju's config; prefer setting
       the `ca` key of contracts.credentials-secret to a Juju secret instead.
@@ -118,15 +174,20 @@ options:
     description: |
       Preferred, Juju-secret-backed alternative to contracts.user/contracts.password/
       contracts.ca: any key set here takes priority over its plain-text counterpart above.
+
       Must be set to the URI of a Juju secret with (as applicable) `user`, `password`
       and `ca` keys, e.g.:
         juju add-secret livepatch-contracts-credentials user=<user> password=<password>
-        juju grant-secret livepatch-contracts-credentials canonical-livepatch-server
-        juju config canonical-livepatch-server contracts.credentials-secret=<secret-uri>
+        juju grant-secret livepatch-contracts-credentials <app-name>
+        juju config <app-name> contracts.credentials-secret=<secret-uri>
 
       `ca` is a base64-encoded certificate of the CA that issued the certificate of the
       contracts service (base64 of "-----BEGIN" to "-----END").
     type: secret
+  contracts.timeout:
+    default: "5s"
+    description: Timeout for requests to the contracts service.
+    type: string
   database.connection-pool-max:
     default: 10
     description: The maximum pool of connections to PostgreSQL.
@@ -135,14 +196,39 @@ options:
     default: 10m
     description: The lifespan of an idle PostgreSQL connection.
     type: string
+  database.work-mem:
+    description: |
+      The PostgreSQL work_mem parameter for connections with the database.
+      The value is specified as an integer number of MegaBytes (MB), matching the
+      unit semantics of PostgreSQL's work_mem setting.
+      This option is optional: when left unset, the charm does not override
+      PostgreSQL's work_mem, and the server's own default value is used.
+    type: int
+  timescale-db.enabled:
+    default: false
+    description: 'Whether or not to enable TimescaleDB for time series data storage.'
+    type: boolean
+  timescale-db.work-mem:
+    default: 16
+    description: 'The PostgreSQL work_mem parameter (in MB) for connections with TimescaleDB.'
+    type: int
+  timescale-db.connection-pool-max:
+    default: 10
+    description: 'The maximum pool of connections to TimescaleDB.'
+    type: int
+  timescale-db.connection-lifetime-max:
+    default: 10m
+    description: The lifespan of an idle TimescaleDB connection.
+    type: string
+  timescale-db.flush-timeout:
+    default: 1m
+    description: 'The maximum time to wait for a flush to complete when flushing time
+      series data to TimescaleDB.'
+    type: string
   patch-storage.type:
     default: filesystem
     description: |
-      The storage type to be used by the charm, defaults to filesystem.
-      The path can be located under:
-        /var/snap/canonical-livepatch-server/common/patches
-
-      The available options are:
+      The storage backend type for patches. Available options are:
         - filesystem
         - swift
         - postgres
@@ -152,11 +238,17 @@ options:
         - ibm
         - oracle
 
-      When using postgres for storage, the charm will work automatically by means of relation.
-      The default database name is under:
-        livepatch
+      When using "postgres" for storage, the charm uses the database relation
+      automatically with the default database name "livepatch". A custom
+      database may be specified via patch-storage.postgres-connection-string
+      but must be created manually.
 
-      The database name can be changed but must be created.
+      When using "filesystem", patches are stored at the path configured in
+      patch-storage.filesystem-path.
+    type: string
+  patch-storage.filesystem-path:
+    default: /var/snap/canonical-livepatch-server/common/patches
+    description: The filesystem path to store patches.
     type: string
   patch-storage.swift-username:
     default: ""
@@ -197,7 +289,6 @@ options:
     description: The region assigned to this domain and tenant.
     type: string
   patch-storage.postgres-connection-string:
-    default: ""
     description: |
       A connection string URI to a PostgreSQL database for patch storage.
 
@@ -445,7 +536,7 @@ options:
     type: boolean
   patch-sync.minimum-kernel-version:
     description: >-
-      A minimum kernel version of format "0.0.0" denoting the lowest 
+      A minimum kernel version of format "0.0.0" denoting the lowest
       kernel version to download patches for. When no value is present,
       all are synced. For example, "5.4.0" will sync "5.4.0" and up.
     type: string
@@ -478,7 +569,7 @@ options:
   patch-sync.token:
     default: ""
     description: |
-      Patch snapshot synchronisation token.
+      Token generated from the admin-tool to authenticate machine to machine.
 
       Deprecated: this option is stored in plain text in Juju's config; prefer setting
       patch-sync.token-secret to a Juju secret URI instead.
@@ -556,6 +647,88 @@ options:
       Specifies KPI worker frequency.
     type: string
 
+  cve-lookup.enabled:
+    default: false
+    description: 'Whether or not if this instance of Livepatch Server should lookup
+      fixed CVEs in response to client requests.'
+    type: boolean
+  cve-lookup.auth-required:
+    default: false
+    description: 'Whether or not requests to retrieve fixed CVEs should be authenticated.'
+    type: boolean
+  cve-sync.enabled:
+    default: false
+    description: 'Whether or not if this instance of Livepatch Server should sync fixed
+      CVEs data.'
+    type: boolean
+  cve-sync.source-url:
+    default: ''
+    description: 'Address of Livepatch CVE service to sync fixed CVEs data from.'
+    type: string
+  cve-sync.interval:
+    default: 1h
+    description: Period between automatic refreshing of fixed CVE data.
+    type: string
+  cve-sync.timeout:
+    default: 5m
+    description: |
+      Timeout for the CVE sync client. The CVE sync will timeout if the CVE service
+      takes longer than the timeout defined, to send the CVE data.
+    type: string
+  cve-sync.proxy.enabled:
+    default: false
+    description: Whether or not to proxy fixed CVE data syncs.
+    type: boolean
+  cve-sync.proxy.http:
+    default: ''
+    description: A comma separated list HTTP proxies to query fixed CVE data.
+    type: string
+  cve-sync.proxy.https:
+    default: ''
+    description: A comma separated list HTTPS proxies to query fixed CVE data.
+    type: string
+  cve-sync.proxy.no-proxy:
+    default: ''
+    description: 'A comma separated list of domains, IP CIDRs and/or ports to block
+      when querying fixed CVE data.'
+    type: string
+  lsn-sync.enabled:
+    default: false
+    description: 'Whether or not if this instance of Livepatch Server should sync LSN
+      data.'
+    type: boolean
+  lsn-sync.source-url:
+    default: ''
+    description: 'Address of Livepatch CVE service to sync LSN data from.'
+    type: string
+  lsn-sync.interval:
+    default: 1h
+    description: Period between automatic refreshing of LSN data.
+    type: string
+  lsn-sync.timeout:
+    default: 5m
+    description: |
+      Timeout for the LSN sync client. The LSN sync will timeout if the CVE service
+      takes longer than the timeout defined, to send the LSN data.
+    type: string
+  lsn-sync.proxy.enabled:
+    default: false
+    description: Whether or not to proxy LSN data syncs.
+    type: boolean
+  lsn-sync.proxy.http:
+    default: ''
+    description: A comma separated list HTTP proxies to query LSN data.
+    type: string
+  lsn-sync.proxy.https:
+    default: ''
+    description: A comma separated list HTTPS proxies to query LSN data.
+    type: string
+  lsn-sync.proxy.no-proxy:
+    default: ''
+    description: 'A comma separated list of domains, IP CIDRs and/or ports to block
+      when querying LSN data.'
+    type: string
+
   influx.enabled:
     description: "Enables influx db support for time series reporting."
     type: boolean
@@ -579,8 +752,42 @@ options:
   influx.bucket:
     description: "Bucket to send data"
     type: string
+  influx.ping-bucket:
+    description: "Bucket to send ping data under a different retention policy"
+    type: string
   influx.organization:
     description: "Organization name"
+    type: string
+
+  tracing.enabled:
+    default: false
+    description: Whether to enable OpenTelemetry tracing. This is a manual toggle
+      and is independent of any charm relation.
+    type: boolean
+  tracing.service-name:
+    default: livepatch-server
+    description: Service name reported in traces.
+    type: string
+  tracing.sample-rate:
+    default: 1.0
+    description: Fraction of traces to sample (0.0 to 1.0).
+    type: float
+  otel-metrics.enabled:
+    default: false
+    description: Whether to enable OpenTelemetry metrics export. This is a manual
+      toggle and is independent of any charm relation.
+    type: boolean
+  otel-metrics.service-name:
+    default: livepatch-server
+    description: Service name reported in OTLP metrics.
+    type: string
+  otel-metrics.export-interval:
+    default: 60s
+    description: How often metrics are exported (e.g. "60s", "1m").
+    type: string
+  otel-metrics.export-timeout:
+    default: 30s
+    description: Timeout for each metrics export attempt (e.g. "30s").
     type: string
 
   profiler.enabled:
@@ -611,7 +818,7 @@ options:
     description: >
       this is the sampling average of one blocking event per `BlockProfileRate` nanoseconds spent blocked.
       For example, set rate to 1000000000 (aka int(time.Second.Nanoseconds())) to record one sample per second a goroutine is blocked.
-      It is recommended to set this to values greater than 10,000. 
+      It is recommended to set this to values greater than 10,000.
       For more info, visit this: https://github.com/DataDog/go-profiler-notes/blob/main/block.md#benchmarks
     type: int
     default: 50000
@@ -632,6 +839,6 @@ options:
     type: boolean
     default: false
   profiler.profile-goroutines:
-    description: would profile separate concurrent running gorountines.
+    description: would profile separate concurrent running goroutines.
     default: false
     type: boolean

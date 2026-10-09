@@ -1,18 +1,240 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+# Hand-rolled copy of canonical/charm-ci's build-artifacts.yml and
+# integration-test.yml (v0.0.1-alpha.9). The reusable workflows have no
+# pre-build hook for charms, and the charms need `make sync` to stage
+# shared/ into each charm tree before packing. Rock-only steps are omitted
+# as this repo builds no rocks. Job names and artifact names must stay
+# identical to charm-ci's: `opcli artifacts fetch` (run inside spread's CI
+# prepare) and the build-failure check below match on them.
+# Switch back to the reusable workflow once charm-ci supports a charm
+# pre-build hook.
+
 name: Integration tests
 
 on:
   pull_request:
 
+env:
+  # charm-ci v1.0.1
+  OPCLI_GIT_REF: 58ae6614a3b143d4e57eff0fd1770e97d8c30fab
+  BUILD_TIMEOUT_MINUTES: 60
+  SPREAD_JOBS_INCLUDE: "integration-test-ci:*"
+
 jobs:
-  integration-test:
-    uses: canonical/charm-ci/.github/workflows/integration-test.yml@v0.0.1-alpha.9
-    with:
-      spread-jobs-include: "integration-test-ci:*"
-    secrets: inherit
+  build-matrix:
+    name: Build matrix
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        run: sudo snap install astral-uv --classic
+
+      - name: Install opcli
+        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+
+      - name: Generate build matrix
+        id: matrix
+        run: |
+          matrix=$(opcli artifacts matrix)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Build matrix: $matrix"
+
+  build:
+    name: "Build ${{ matrix.type }} ${{ matrix.name }} (${{ matrix.arch }})"
+    needs: build-matrix
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.build-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up tmate session
+        if: runner.debug == 1
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: true
+
+      - name: Install uv
+        run: sudo snap install astral-uv --classic
+
+      - name: Install opcli
+        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+
+      - name: Install LXD
+        run: |
+          sudo snap install lxd
+          sudo lxd waitready
+          sudo lxd init --auto
+          sudo usermod -aG lxd $USER
+          sudo chmod 0666 /var/snap/lxd/common/lxd/unix.socket
+          if sudo iptables -nL DOCKER-USER 2>/dev/null; then
+            sudo iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+            sudo iptables -I DOCKER-USER -o lxdbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          fi
+          if sudo ip6tables -nL DOCKER-USER 2>/dev/null; then
+            sudo ip6tables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+            sudo ip6tables -I DOCKER-USER -o lxdbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          fi
+
+      - name: Install charmcraft
+        if: matrix.type == 'charm'
+        run: sudo snap install charmcraft --classic --channel=latest/stable
+
+      - name: Sync shared sources
+        run: make sync
+
+      - name: Build ${{ matrix.type }} ${{ matrix.name }}
+        run: |
+          opcli artifacts build \
+            --${{ matrix.type }} ${{ matrix.name }} \
+            --build-timeout $(( BUILD_TIMEOUT_MINUTES * 60 )) \
+            || opcli artifacts build \
+               --${{ matrix.type }} ${{ matrix.name }} \
+               --build-timeout $(( BUILD_TIMEOUT_MINUTES * 60 ))
+
+      - name: Upload ${{ matrix.type }} ${{ matrix.name }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-${{ matrix.type }}-${{ matrix.name }}-${{ matrix.arch }}
+          path: ./**/*.${{ matrix.type }}
+          if-no-files-found: error
+
+      - name: Upload partial build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-build-${{ matrix.type }}-${{ matrix.name }}-${{ matrix.arch }}
+          path: artifacts.build.yaml
+          if-no-files-found: error
+
+  test-matrix:
+    name: Test matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        run: sudo snap install astral-uv --classic
+
+      - name: Install opcli
+        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+
+      - name: Install spread
+        run: |
+          sudo snap install go --classic
+          go install github.com/canonical/spread/cmd/spread@latest
+          sudo ln -sf ~/go/bin/spread /usr/local/bin/spread
+
+      - name: Generate test matrix
+        id: matrix
+        run: |
+          matrix=$(opcli spread jobs --include "$SPREAD_JOBS_INCLUDE")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Test matrix: $matrix"
+
+  # Starts without waiting for the build so provisioning overlaps it; spread's
+  # CI prepare waits for and downloads the build artifacts.
+  test:
+    name: "${{ matrix.name }}"
+    needs: [test-matrix]
+    runs-on: ${{ fromJSON(matrix.runs-on) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
       actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute artifact fetch timeout
+        run: echo "OPCLI_FETCH_WAIT_TIMEOUT=$(( BUILD_TIMEOUT_MINUTES * 60 + 600 ))" >> "$GITHUB_ENV"
+
+      - name: Set up tmate session
+        if: runner.debug == 1
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: true
+
+      - name: Install uv
+        run: sudo snap install astral-uv --classic
+
+      - name: Install opcli
+        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+
+      - name: Install spread
+        run: |
+          sudo snap install go --classic
+          go install github.com/canonical/spread/cmd/spread@latest
+          sudo ln -sf ~/go/bin/spread /usr/local/bin/spread
+
+      - name: Abort if build failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          conclusion=$(gh run view "${{ github.run_id }}" \
+            --repo "${{ github.repository }}" \
+            --json jobs \
+            --jq '
+              [.jobs[] | select(.name | test("(?:^|/ )Build (?:charm|rock|snap) .+ \\(")) | .conclusion] |
+              if any(. == "failure") then "failure"
+              elif any(. == "cancelled") then "cancelled"
+              else empty
+              end
+            ')
+          if [[ "$conclusion" =~ ^(failure|cancelled)$ ]]; then
+            echo "::error::Build failed — build job conclusion is '$conclusion'. Skipping test."
+            exit 1
+          fi
+
+      # Docker sets the FORWARD policy to DROP, which blocks LXD bridge traffic.
+      - name: Fix LXD+Docker forwarding
+        run: |
+          sudo iptables -P FORWARD ACCEPT
+          if sudo iptables -nL DOCKER-USER 2>/dev/null; then
+            sudo iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+            sudo iptables -I DOCKER-USER -o lxdbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          fi
+          if sudo ip6tables -nL DOCKER-USER 2>/dev/null; then
+            sudo ip6tables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+            sudo ip6tables -I DOCKER-USER -o lxdbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          fi
+
+      - name: Run spread task
+        env:
+          CI: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: opcli spread run -- -vv ${{ matrix.selector }}
+
+      - name: Juju status (on failure)
+        if: failure()
+        run: |
+          sudo -u ubuntu bash -c '
+            juju models --format json | jq -r ".models[].\"short-name\"" | while IFS= read -r model; do
+              echo "=== juju status for model: $model ==="
+              juju status -m "$model" --relations --storage || true
+            done
+          '
+
+      - name: Juju debug-log (on failure)
+        if: failure()
+        run: sudo -u ubuntu juju debug-log --replay

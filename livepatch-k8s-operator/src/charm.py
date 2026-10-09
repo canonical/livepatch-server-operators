@@ -19,12 +19,13 @@ here directly.
 
 import logging
 import typing
-from base64 import b64decode
 from urllib.parse import urlparse
 
 import ops
 import ops.pebble
 import paas_charm.app
+import paas_charm.charm
+import paas_charm.databases
 import paas_charm.go
 import pgsql
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequiresEvent
@@ -33,8 +34,44 @@ from paas_charm.utils import config_get_with_secret
 from charms.nginx_ingress_integrator.v0.nginx_route import require_nginx_route
 from paas_charm.databases import PaaSDatabaseRequires
 
-import utils
+# paas_charm's make_database_requirers iterates through all relations in
+# metadata matching SUPPORTED_DB_INTERFACES and attempts to instantiate a
+# PaaSDatabaseRequires for each. When a charm defines an additional relation
+# with the same interface (like `metrics-db: interface: postgresql_client`),
+# make_database_requirers maps it to the same key 'postgresql' and creates
+# a duplicate PaaSDatabaseRequires object, raising a RuntimeError.
+# We patch make_database_requirers to only create requirers for standard relation names.
+_orig_make_database_requirers = paas_charm.databases.make_database_requirers
+
+
+def _patched_make_database_requirers(
+    charm: ops.CharmBase, database_name: str
+) -> typing.Dict[str, PaaSDatabaseRequires]:
+    databases: dict[str, PaaSDatabaseRequires] = {}
+    for req_name, require in charm.framework.meta.requires.items():
+        if require.interface_name in paas_charm.databases.SUPPORTED_DB_INTERFACES:
+            expected_name = paas_charm.databases.SUPPORTED_DB_INTERFACES[require.interface_name]
+            if req_name == expected_name and req_name not in databases:
+                databases[req_name] = PaaSDatabaseRequires(
+                    charm,
+                    relation_name=req_name,
+                    database_name=database_name,
+                )
+    return databases
+
+
+paas_charm.databases.make_database_requirers = _patched_make_database_requirers
+paas_charm.charm.make_database_requirers = _patched_make_database_requirers
+
 from legacy_constants import map_old_config_to_new_config
+from livepatch_common.config import SECRET_FALLBACK_OPTIONS, SECRET_GROUPS, SECRET_VALUE_KEY
+from livepatch_common.contracts import get_machine_token, get_proxy_dict, get_resource_token
+from livepatch_common.relations import (
+    cve_source_url,
+    otlp_metrics_endpoint,
+    pro_airgapped_server_address,
+)
+from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME, decode_contracts_ca
 from log_redactor import setup_log_redaction
 
 logger = logging.getLogger(__name__)
@@ -47,8 +84,6 @@ SEND_OTLP_RELATION = "send-otlp"
 DATABASE_LEGACY_RELATION = "database-legacy"
 DATABASE_LEGACY_NAME = "livepatch-server"
 SCHEMA_TOOL_PATH = "/usr/local/bin/livepatch-schema-tool"
-# Template for storing the trusted CA certificate for the contracts service.
-TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt"
 
 # Juju secret label used to persist the ua-contracts resource token exchanged
 # via the get-resource-token action. A Juju app-owned secret is used instead
@@ -58,51 +93,55 @@ RESOURCE_TOKEN_SECRET_LABEL = "patch-sync-resource-token"
 # Juju secret label used to persist the legacy (pgsql interface) database
 # connection string. Same reasoning as RESOURCE_TOKEN_SECRET_LABEL above.
 LEGACY_DB_SECRET_LABEL = "legacy-database-connection-string"
-# The key under which a `type: secret` config option or the `contract-token`
-# action param's value is expected to be stored in the secret's content, for
-# options that hold a single, standalone value.
-SECRET_VALUE_KEY = "value"  # nosec B105
+
+
+def _udc_key(option: str) -> str:
+    """Return the `user_defined_config` key form of a canonical option name.
+
+    paas-charm exposes configuration under keys with dashes replaced by
+    underscores and dots preserved.
+
+    Args:
+        option: the canonical Juju option name.
+
+    Returns:
+        The option's `user_defined_config` key form.
+    """
+    return option.replace("-", "_")
+
+
+def _env_var_name(option: str) -> str:
+    """Return the `LP_*` environment variable name for a canonical option.
+
+    Args:
+        option: the canonical Juju option name.
+
+    Returns:
+        The uppercased, `LP_`-prefixed environment variable name.
+    """
+    return "LP_" + option.replace("-", "_").replace(".", "_").upper()
+
 
 # Standalone config options with a preferred, Juju-secret-backed sibling: the
-# secret (if set) takes priority over the deprecated plain-text option. Keyed
-# by the plain option's `user_defined_config` key form (dashes underscored,
-# dots preserved), mapping to its secret sibling's key form and the `LP_*`
-# env var both ultimately feed.
+# secret (if set) takes priority over the deprecated plain-text option. Derived
+# from the shared canonical mapping and keyed by the plain option's
+# `user_defined_config` key form, mapping to its secret sibling's key form and
+# the `LP_*` env var both ultimately feed.
 SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
-    "auth.basic.users": ("auth.basic.users_secret", "LP_AUTH_BASIC_USERS"),
-    "patch_storage.swift_api_key": ("patch_storage.swift_api_key_secret", "LP_PATCH_STORAGE_SWIFT_API_KEY"),
-    "patch_storage.gcs_credentials_json": (
-        "patch_storage.gcs_credentials_json_secret",
-        "LP_PATCH_STORAGE_GCS_CREDENTIALS_JSON",
-    ),
-    "patch_storage.ibm_api_key": ("patch_storage.ibm_api_key_secret", "LP_PATCH_STORAGE_IBM_API_KEY"),
-    "patch_sync.token": ("patch_sync.token_secret", "LP_PATCH_SYNC_TOKEN"),
-    "influx.token": ("influx.token_secret", "LP_INFLUX_TOKEN"),
+    _udc_key(plain): (_udc_key(secret), _env_var_name(plain))
+    for plain, secret in SECRET_FALLBACK_OPTIONS.items()
 }
 
 # Config options that bundle several related, deprecated plain-text options
 # into a single preferred Juju secret (so operators only have to manage one
-# secret per group). Keyed by the secret's `user_defined_config` key form,
-# mapping each expected secret content key to the plain option's key form and
-# the `LP_*` env var both ultimately feed.
+# secret per group). Derived from the shared canonical mapping and keyed by the
+# secret's `user_defined_config` key form, mapping each expected secret content
+# key to the plain option's key form and the `LP_*` env var both ultimately feed.
 SECRET_GROUP_ENV_VARS: dict[str, dict[str, tuple[str, str]]] = {
-    "contracts.credentials_secret": {
-        "user": ("contracts.user", "LP_CONTRACTS_USER"),
-        "password": ("contracts.password", "LP_CONTRACTS_PASSWORD"),
-        "ca": ("contracts.ca", "LP_CONTRACTS_CA"),
-    },
-    "patch_storage.s3_credentials_secret": {
-        "access-key": ("patch_storage.s3_access_key", "LP_PATCH_STORAGE_S3_ACCESS_KEY"),
-        "secret-key": ("patch_storage.s3_secret_key", "LP_PATCH_STORAGE_S3_SECRET_KEY"),
-    },
-    "patch_storage.azure_credentials_secret": {
-        "account-key": ("patch_storage.azure_account_key", "LP_PATCH_STORAGE_AZURE_ACCOUNT_KEY"),
-        "connection-string": (
-            "patch_storage.azure_connection_string",
-            "LP_PATCH_STORAGE_AZURE_CONNECTION_STRING",
-        ),
-        "client-secret": ("patch_storage.azure_client_secret", "LP_PATCH_STORAGE_AZURE_CLIENT_SECRET"),
-    },
+    _udc_key(group): {
+        content_key: (_udc_key(plain), _env_var_name(plain)) for content_key, plain in sub_keys.items()
+    }
+    for group, sub_keys in SECRET_GROUPS.items()
 }
 
 
@@ -161,6 +200,19 @@ def _resolve_secret_config(
 class LivepatchApp(paas_charm.app.App):
     """Application wrapper that maps charm state to livepatch-server's `LP_*` env vars."""
 
+    def __init__(self, *, charm: "LivepatchCharm", **kwargs: typing.Any) -> None:
+        """Construct, keeping a reference to the owning charm for the custom env var logic.
+
+        `paas_charm.app.App` doesn't keep a reference to the charm itself, but
+        `gen_environment()` below needs one to read custom relation/secret state.
+
+        Args:
+            charm: the charm instance that owns this App.
+            kwargs: passthrough to `paas_charm.app.App.__init__`.
+        """
+        super().__init__(**kwargs)
+        self._charm = charm
+
     def gen_environment(self) -> dict[str, str]:
         """Return the environment for the Livepatch Pebble service.
 
@@ -174,7 +226,7 @@ class LivepatchApp(paas_charm.app.App):
         """
         env = super().gen_environment()
 
-        charm = self._charm  # type: ignore[attr-defined]
+        charm = self._charm
 
         user_defined_config = dict(self._charm_state.user_defined_config)
 
@@ -282,6 +334,8 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             args: passthrough to CharmBase/PaasCharm.
         """
+        # The `metrics-db`/`postgresql` interface collision in make_database_requirers()
+        # is handled by the module-level patch above.
         super().__init__(*args)
         setup_log_redaction()
 
@@ -354,6 +408,7 @@ class LivepatchCharm(paas_charm.go.Charm):
             A new LivepatchApp instance.
         """
         return LivepatchApp(
+            charm=self,
             container=self._container,
             charm_state=self._create_charm_state(),
             workload_config=self._workload_config,
@@ -495,10 +550,11 @@ class LivepatchCharm(paas_charm.go.Charm):
             logger.debug("ca config not set")
             return
 
-        try:
-            cert = b64decode(contracts_ca).decode("utf8")
-        except Exception:  # noqa: BLE001 - malformed config shouldn't crash the charm
-            logger.error("failed to parse base64 value of the `ca` key in `contracts.credentials-secret`/`contracts.ca`")
+        cert, _ = decode_contracts_ca(contracts_ca)
+        if cert is None:
+            logger.error(
+                "failed to parse base64 value of the `ca` key in `contracts.credentials-secret`/`contracts.ca`"
+            )
             return
 
         container.push(TRUSTED_CA_FILENAME, cert, make_dirs=True)
@@ -536,10 +592,7 @@ class LivepatchCharm(paas_charm.go.Charm):
             data = relation.data.get(unit)
             if not data or not data.get("hostname"):
                 continue
-            scheme = data.get("scheme") or "http"
-            port = data.get("port")
-            netloc = data["hostname"] + (f":{port}" if port else "")
-            return f"{scheme}://{netloc}"
+            return pro_airgapped_server_address(data)
         return None
 
     def cve_catalog_address(self) -> typing.Optional[str]:
@@ -551,8 +604,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         relation = self.model.get_relation(CVE_CATALOG_RELATION)
         if not relation:
             return None
-        address = relation.data.get(relation.app, {}).get("url", "")
-        return address or None
+        return cve_source_url(relation.data.get(relation.app, {}))
 
     def otel_metrics_endpoint(self) -> typing.Optional[typing.Tuple[str, str, bool]]:
         """Return (endpoint, protocol, insecure) for the send-otlp relation, if related.
@@ -563,13 +615,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         relation = self.model.get_relation(SEND_OTLP_RELATION)
         if not relation:
             return None
-        data = relation.data.get(relation.app, {})
-        endpoint = data.get("endpoint")
-        if not endpoint:
-            return None
-        protocol = data.get("protocol", "http")
-        insecure = data.get("insecure", "true") == "true"
-        return endpoint, protocol, insecure
+        return otlp_metrics_endpoint(relation.data.get(relation.app, {}))
 
     def resource_token(self) -> typing.Optional[str]:
         """Return the stored patch-sync resource token, if any.
@@ -633,16 +679,16 @@ class LivepatchCharm(paas_charm.go.Charm):
             )
             return
 
-        proxies = utils.get_proxy_dict(self.config)
+        proxies = get_proxy_dict(self.config)
         contracts_url = self.config.get("contracts.url", "")
-        machine_token = utils.get_machine_token(
+        machine_token = get_machine_token(
             contract_token, contracts_url=contracts_url, proxies=proxies
         )
         if not machine_token:
             event.fail("cannot fetch the resource token: failed to fetch the machine token")
             return
 
-        resource_token = utils.get_resource_token(
+        resource_token = get_resource_token(
             machine_token, contracts_url=contracts_url, proxies=proxies
         )
         if not resource_token:

@@ -44,13 +44,13 @@ from constants.statuses import (
     LIVEPATCH_RUNNING,
     SCHEMA_UPGRADE_FAILED,
 )
+from constants.snap import SCHEMA_TARGET_TIMESCALE
+from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME
 from relations import BothDatabaseRelationsError
 from util.schema_tool import SchemaToolError, run_schema_upgrade, upgrade_required
 from workload import SnapWorkload
 
 logger = logging.getLogger(__name__)
-
-TRUSTED_CA_FILENAME = "/usr/local/share/ca-certificates/trusted-contracts.ca.crt"
 
 
 class MachineReconciler:
@@ -119,7 +119,7 @@ class MachineReconciler:
             return
 
         try:
-            schema_upgraded = self._converge_schema(db_uri)
+            schema_upgraded = self._converge_schema(db_uri, self._charm.metrics_db_uri)
         except (OSError, SchemaToolError) as e:
             logger.error("failed to upgrade the database schema: %s", e)
             self.status = BlockedStatus(SCHEMA_UPGRADE_FAILED)
@@ -137,6 +137,9 @@ class MachineReconciler:
             is_leader=charm.unit.is_leader(),
             model_uuid=charm.model.uuid,
             pro_airgapped_url=relations.pro_airgapped_url(charm),
+            timescale_db_uri=charm.metrics_db_uri,
+            cve_catalog_url=relations.cve_catalog_url(charm),
+            otel_metrics_endpoint=relations.otel_metrics_endpoint(charm),
         )
         try:
             config_changed = self._workload.apply_config(desired)
@@ -194,14 +197,16 @@ class MachineReconciler:
 
     # -- Schema helpers.
 
-    def _converge_schema(self, db_uri: str) -> bool:
-        """Migrate the database schema, if it is not already up to date.
+    def _converge_schema(self, db_uri: str, metrics_db_uri: Optional[str] = None) -> bool:
+        """Migrate the database schemas, if they are not already up to date.
 
         Every unit runs this on every reconcile; the snap serializes concurrent
         upgrade attempts internally, so no peer coordination is needed here.
 
         Args:
-            db_uri: the database connection string to check and migrate.
+            db_uri: the primary database connection string to check and migrate.
+            metrics_db_uri: the metrics/Timescale database connection string, if
+                the metrics-db relation is established.
 
         Returns:
             True if a migration was performed this reconcile.
@@ -209,11 +214,16 @@ class MachineReconciler:
         Raises:
             SchemaToolError: if the check or upgrade command failed.
         """
-        if not upgrade_required(db_uri):
-            return False
-        logger.info("database schema requires a migration; running the upgrade")
-        run_schema_upgrade(db_uri)
-        return True
+        upgraded = False
+        if upgrade_required(db_uri):
+            logger.info("database schema requires a migration; running the upgrade")
+            run_schema_upgrade(db_uri)
+            upgraded = True
+        if metrics_db_uri and upgrade_required(metrics_db_uri, target=SCHEMA_TARGET_TIMESCALE):
+            logger.info("metrics database schema requires a migration; running the upgrade")
+            run_schema_upgrade(metrics_db_uri, target=SCHEMA_TARGET_TIMESCALE)
+            upgraded = True
+        return upgraded
 
     # -- Certificate helpers.
 

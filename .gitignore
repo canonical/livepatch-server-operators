@@ -1,3 +1,13 @@
+__pycache__/
+*.py[cod]
+.tox/
+.venv/
+livepatch-k8s-operator/src/livepatch_common/
+livepatch-machine-operator/src/livepatch_common/
+livepatch-k8s-operator/cos_custom/
+livepatch-machine-operator/src/grafana_dashboards/
+artifacts.build.yaml
+
 # Workshop tracks the project directory with this file; it must stay local
 # and must never be committed or copied elsewhere.
 .workshop.lock
