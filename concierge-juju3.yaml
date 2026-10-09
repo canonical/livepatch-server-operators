@@ -11,7 +11,11 @@ providers:
     bootstrap: true
   k8s:
     enable: true
-    bootstrap: true
+    # Not bootstrapped: the single controller is on LXD (so the `localhost`
+    # credential is native), and the K8s cluster is added to it as a secondary
+    # cloud by the test fixtures. Enabling the provider still installs and forms
+    # the K8s cluster and writes the kubeconfig that `juju add-k8s` consumes.
+    bootstrap: false
     bootstrap-constraints:
       root-disk: "2G"
     features:

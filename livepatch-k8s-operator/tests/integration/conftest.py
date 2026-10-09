@@ -8,7 +8,7 @@ import logging
 import os
 import pathlib
 import subprocess
-from typing import Dict, Iterable, Iterator, Optional
+from typing import Dict, Iterable, Optional
 
 import jubilant
 import pytest
@@ -139,20 +139,23 @@ def _find_cloud(controller: str, cloud_types: Iterable[str], override: Optional[
 
 
 def _ensure_k8s_cloud(controller: str) -> None:
-    """Ensure a K8s cloud is registered with the cross-model controller.
+    """Ensure a K8s cloud is registered with the (LXD-bootstrapped) controller.
 
-    The cross-model tests run on an LXD-bootstrapped controller so that the
-    `localhost` LXD credential is native. Cross-model relations require both
-    models under one controller, so the K8s charm's cloud has to live there too.
-    The local K8s cluster - taken from the kubeconfig that concierge writes - is
-    registered as a secondary cloud with `juju add-k8s`. This mirrors the
-    standalone repo's CI, which ran `juju add-cloud microk8s --controller
-    <lxd-controller> --credential microk8s`.
+    The single controller is bootstrapped on LXD so that the `localhost` LXD
+    credential is native. The K8s charm still needs a K8s cloud, so the local
+    K8s cluster - taken from the kubeconfig that concierge writes - is registered
+    as a secondary cloud with `juju add-k8s`. This mirrors the standalone repo's
+    CI, which ran `juju add-cloud microk8s --controller <lxd-controller>
+    --credential microk8s`.
+
+    `--client` registers the cloud/credential in the local store as well, which
+    Juju requires before (or while) adding it to the controller. The cloud name
+    must not be Juju's reserved built-in `k8s`.
     """
     if any(info.get("type") in K8S_CLOUD_TYPES for info in _controller_clouds(controller).values()):
         return
     logger.info("Registering K8s cloud %r with controller %s", K8S_SECONDARY_CLOUD, controller)
-    _run_juju("add-k8s", K8S_SECONDARY_CLOUD, "--controller", controller)
+    _run_juju("add-k8s", K8S_SECONDARY_CLOUD, "--client", "--controller", controller)
 
 
 def _k8s_workload_storage() -> str:
@@ -187,32 +190,49 @@ def _k8s_workload_storage() -> str:
     return "microk8s-hostpath"
 
 
-@pytest.fixture(scope="module")
-def k8s_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juju]:
-    """Return a Juju instance for a temporary K8s model on the cross-model controller.
+def _k8s_juju(juju_factory: pytest_jubilant.JujuFactory, suffix: str) -> jubilant.Juju:
+    """Create a temporary K8s model on the (LXD-bootstrapped) cross-model controller.
 
-    The cross-model controller is bootstrapped on LXD (so the `localhost`
-    credential is native), and the local K8s cluster is added to it as a
-    secondary cloud. Because a K8s cloud added to an LXD controller has no usable
-    default storage class, the workload storage class is set explicitly.
+    The single controller is bootstrapped on LXD (so the `localhost` credential
+    is native), and the local K8s cluster is added to it as a secondary cloud.
+    Because a K8s cloud added to an LXD controller has no usable default storage
+    class, the workload storage class is set explicitly. Model teardown and log
+    dumping are handled by `juju_factory`.
     """
     controller = CROSS_MODEL_CONTROLLER
     _ensure_k8s_cloud(controller)
     cloud = _find_cloud(controller, K8S_CLOUD_TYPES, K8S_CLOUD)
-    juju = juju_factory.get_juju(suffix="k8s", controller=controller, cloud=cloud)
+    juju = juju_factory.get_juju(suffix=suffix, controller=controller, cloud=cloud)
 
     if _controller_cloud_type(controller) == "lxd":
         juju.model_config({"workload-storage": _k8s_workload_storage()})
-    yield juju
+    return juju
 
 
 @pytest.fixture(scope="module")
-def lxd_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juju]:
+def juju(juju_factory: pytest_jubilant.JujuFactory) -> jubilant.Juju:
+    """Override pytest-jubilant's default `juju` fixture for the K8s charm modules.
+
+    The single controller is bootstrapped on LXD, so the plain K8s modules can't
+    use the controller's default (LXD) cloud; this creates their model on the
+    K8s cloud added to the controller, with the required workload storage class.
+    """
+    return _k8s_juju(juju_factory, suffix="")
+
+
+@pytest.fixture(scope="module")
+def k8s_juju(juju_factory: pytest_jubilant.JujuFactory) -> jubilant.Juju:
+    """Return a Juju instance for a temporary K8s model (for cross-model tests)."""
+    return _k8s_juju(juju_factory, suffix="k8s")
+
+
+@pytest.fixture(scope="module")
+def lxd_juju(juju_factory: pytest_jubilant.JujuFactory) -> jubilant.Juju:
     """Return a Juju instance for a temporary LXD model on the cross-model controller.
 
-    The cross-model controller is bootstrapped on LXD, so the `localhost`
-    credential is native and no cloud/credential provisioning is required here.
+    The controller is bootstrapped on LXD, so the `localhost` credential is
+    native and no cloud/credential provisioning is required here.
     """
     controller = CROSS_MODEL_CONTROLLER
     cloud = _find_cloud(controller, LXD_CLOUD_TYPES, LXD_CLOUD)
-    yield juju_factory.get_juju(suffix="lxd", controller=controller, cloud=cloud)
+    return juju_factory.get_juju(suffix="lxd", controller=controller, cloud=cloud)

@@ -50,16 +50,16 @@ LXD_CLOUD = os.environ.get("JUJU_LXD_CLOUD")
 # not given a usable default storage class, so one must be set manually.
 K8S_WORKLOAD_STORAGE = os.environ.get("JUJU_K8S_WORKLOAD_STORAGE")
 
-# Controllers used by the test suites. concierge bootstraps one controller per
-# provider, named `concierge-<provider>`. The pure-K8s modules run on the K8s-
-# bootstrapped controller (pinned via `--juju-controller` in spread.yaml); the
-# cross-model modules run on the LXD-bootstrapped controller (so the `localhost`
-# LXD credential is native) which also has the local K8s cluster added as a
-# secondary cloud.
+# The single controller is bootstrapped on LXD (so the `localhost` LXD
+# credential is native). All K8s test modules run on it with the local K8s
+# cluster added as a secondary cloud; the plain K8s modules deploy to that K8s
+# cloud, and the cross-model modules additionally use the native `localhost`
+# cloud for the machine side of their cross-model relations.
 CROSS_MODEL_CONTROLLER = os.environ.get("JUJU_CROSS_MODEL_CONTROLLER", "concierge-lxd")
 # Name under which the local K8s cluster is registered on the cross-model
-# (LXD-bootstrapped) controller.
-K8S_SECONDARY_CLOUD = os.environ.get("JUJU_K8S_SECONDARY_CLOUD", "k8s")
+# (LXD-bootstrapped) controller. Must not collide with Juju's built-in `k8s`
+# cloud name.
+K8S_SECONDARY_CLOUD = os.environ.get("JUJU_K8S_SECONDARY_CLOUD", "k8scloud")
 
 # Cloud types as reported by `juju clouds`, in the order they are preferred when
 # several clouds of the same kind are registered.
