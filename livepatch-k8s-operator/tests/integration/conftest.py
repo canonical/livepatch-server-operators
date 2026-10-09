@@ -7,7 +7,9 @@ import json
 import logging
 import os
 import pathlib
+import re
 import subprocess
+import tempfile
 from typing import Dict, Iterable, Optional
 
 import jubilant
@@ -100,16 +102,62 @@ def _controller_cloud_type(controller: str) -> str:
     return _controller_clouds(controller).get(cloud, {}).get("type", "")
 
 
-def _run_juju(*args: str, stdin: Optional[str] = None) -> int:
+def _run_juju(*args: str, stdin: Optional[str] = None, env: Optional[dict] = None) -> int:
     """Run a Juju CLI command for test setup, logging its combined output.
 
     Returns the exit code without raising. Used for the best-effort cloud
     provisioning steps, whose output we always want captured in the CI logs.
     """
-    proc = subprocess.run(["juju", *args], input=stdin, capture_output=True, encoding="utf-8")
+    proc = subprocess.run(["juju", *args], input=stdin, capture_output=True, encoding="utf-8", env=env)
     output = ((proc.stdout or "") + (proc.stderr or "")).strip()
     logger.info("juju %s (exit=%s)\n%s", " ".join(args), proc.returncode, output)
     return proc.returncode
+
+
+def _reachable_kubeconfig() -> Optional[str]:
+    """Write a kubeconfig whose API server is reachable from the LXD controller.
+
+    concierge writes a kubeconfig whose API server is `https://127.0.0.1:6443`,
+    which the Juju controller (running in a LXD container) cannot reach - it
+    resolves to the container itself. Rewrite the server host to the K8s node's
+    InternalIP, which is in the API server certificate SANs and is routable from
+    the container. `juju add-k8s` then stores that reachable endpoint.
+
+    Returns the path to the rewritten kubeconfig, or None if nothing needed
+    rewriting or discovery failed (in which case the original kubeconfig is used).
+    """
+    try:
+        node_ip = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "nodes",
+                "-o",
+                "jsonpath={.items[0].status.addresses[?(@.type=='InternalIP')].address}",
+            ],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+        if not node_ip:
+            return None
+        config = yaml.safe_load((pathlib.Path.home() / ".kube" / "config").read_text())
+        changed = False
+        for cluster in config.get("clusters", []):
+            server = cluster.get("cluster", {}).get("server", "")
+            new = re.sub(r"(?<=//)(127\.0\.0\.1|localhost)(?=[:/]|$)", node_ip, server)
+            if new != server:
+                cluster["cluster"]["server"] = new
+                changed = True
+        if not changed:
+            return None
+        dst = pathlib.Path(tempfile.gettempdir()) / "livepatch-k8s-reachable.kubeconfig"
+        dst.write_text(yaml.safe_dump(config))
+        logger.info("Rewrote kubeconfig API server host to node InternalIP %s", node_ip)
+        return str(dst)
+    except Exception as exc:  # noqa: BLE001 - best-effort; fall back to the original kubeconfig
+        logger.warning("Could not rewrite kubeconfig server address: %s", exc)
+        return None
 
 
 def _find_cloud(controller: str, cloud_types: Iterable[str], override: Optional[str]) -> str:
@@ -155,7 +203,11 @@ def _ensure_k8s_cloud(controller: str) -> None:
     if any(info.get("type") in K8S_CLOUD_TYPES for info in _controller_clouds(controller).values()):
         return
     logger.info("Registering K8s cloud %r with controller %s", K8S_SECONDARY_CLOUD, controller)
-    _run_juju("add-k8s", K8S_SECONDARY_CLOUD, "--client", "--controller", controller)
+    env = None
+    kubeconfig = _reachable_kubeconfig()
+    if kubeconfig:
+        env = {**os.environ, "KUBECONFIG": kubeconfig}
+    _run_juju("add-k8s", K8S_SECONDARY_CLOUD, "--client", "--controller", controller, env=env)
 
 
 def _k8s_workload_storage() -> str:
