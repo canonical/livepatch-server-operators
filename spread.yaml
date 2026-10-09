@@ -54,7 +54,8 @@ integration-suites:
     # pytest-jubilant tears the per-module models down by default, so there is
     # no equivalent of pytest-operator's `--keep-models`/`--model` here; pass
     # `--no-juju-teardown`/`--juju-model` locally when you want to keep them.
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s"'
+    # `--juju-dump-logs` captures the full juju debug-log on failure before models are torn down.
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
     pytest-environment-template: |
       {% for build in artifacts.charms[0].builds if build.arch == arch %}
       CHARM_PATH={{ build.path }}

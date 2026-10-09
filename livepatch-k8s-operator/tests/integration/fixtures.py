@@ -19,7 +19,6 @@ from helpers import (
     POSTGRESQL_CHANNEL,
     POSTGRESQL_NAME,
     fast_forward,
-    get_unit_url,
     wait_for_apps,
 )
 
@@ -39,6 +38,7 @@ CHARM_CONFIG = {
     "server.concurrency-limit": 50,
     "server.is-hosted": True,
     "server.log-level": "info",
+    "server.url-template": "http://livepatch:8080/v1/patches/{filename}",
 }
 
 
@@ -89,13 +89,6 @@ def deploy_package(
 
         logger.info("Making relations")
         perform_livepatch_integrations(juju, db_endpoint)
-        wait_for_apps(juju, [APP_NAME], status=BLOCKED_STATUS, timeout=600)
-
-        logger.info("Setting server.url-template")
-        url = get_unit_url(juju, application=APP_NAME, unit=0, port=APP_PORT)
-        url_template = f"{url}/v1/patches/{{filename}}"
-        logger.info(f"Set server.url-template to {url_template}")
-        juju.config(APP_NAME, {"server.url-template": url_template})
 
         # The charm automatically triggers schema upgrade after the integrations are made.
         # So, we should wait for an active state.

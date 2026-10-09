@@ -100,6 +100,26 @@ def _controller_cloud_type(juju: jubilant.Juju) -> str:
     return _controller_clouds(juju).get(cloud, {}).get("type", "")
 
 
+def _ensure_lxd_cloud(juju: jubilant.Juju) -> None:
+    """Ensure an LXD cloud is registered with the current controller.
+
+    In CI environments (e.g. concierge), the controller is bootstrapped on k8s
+    and initially only knows about the k8s cloud, even though LXD is installed on
+    the host. Adding 'localhost' (type lxd) to the controller enables cross-model
+    relations between k8s and machine charms under the same controller.
+    """
+    clouds = _controller_clouds(juju)
+    if any(info.get("type") in LXD_CLOUD_TYPES for info in clouds.values()):
+        return
+
+    controller, _ = _controller_info(juju)
+    logger.info("Registering LXD cloud 'localhost' with controller %s", controller)
+    try:
+        juju.cli("add-cloud", "--controller", controller, "localhost", include_model=False)
+    except Exception as exc:
+        logger.warning("Could not add LXD cloud 'localhost' to controller %s: %s", controller, exc)
+
+
 def _find_cloud(juju: jubilant.Juju, cloud_types: Iterable[str], override: Optional[str]) -> str:
     """Return the name of a cloud of one of `cloud_types` known to the controller.
 
@@ -159,4 +179,5 @@ def k8s_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juj
 @pytest.fixture(scope="module")
 def lxd_juju(juju_factory: pytest_jubilant.JujuFactory) -> Iterator[jubilant.Juju]:
     """Return a Juju instance for a temporary model on the LXD cloud (for cross-model tests)."""
+    _ensure_lxd_cloud(jubilant.Juju())
     yield juju_factory.get_juju(suffix="lxd", cloud=_find_cloud(jubilant.Juju(), LXD_CLOUD_TYPES, LXD_CLOUD))
