@@ -62,7 +62,13 @@ x-k8s-suite: &k8s-suite
   restore: |
     rm -f /home/ubuntu/.app-image-auth.yaml
   pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+  # SPREAD_SYSTEM (e.g. ubuntu-26.04-large) is only visible here, not to
+  # pytest, so the build matching the system's base is picked in this template.
   pytest-environment-template: |
+    {% set system_base = env.get("SPREAD_SYSTEM", "").replace("-large", "") %}
+    {% for build in artifacts.charms[0].builds if build.arch == arch and (build.base or "").replace("@", "-") == system_base %}
+    CHARM_PATH={{ build.path }}
+    {% endfor %}
     LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
 
 # TODO: rework the machine suite once it is switched to jubilant

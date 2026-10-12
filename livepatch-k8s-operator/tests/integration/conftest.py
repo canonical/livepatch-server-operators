@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import pathlib
-import re
 import subprocess
 from typing import Dict, Iterable, Optional
 
@@ -48,20 +47,13 @@ def app_image_resource(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture(scope="session")
-def charm(request: pytest.FixtureRequest) -> pathlib.Path:
+def charm() -> pathlib.Path:
     """Return the path of the charm under test.
 
-    The tests don't pack the charm. CHARM_PATH wins when set; otherwise the
-    build matching the spread system's base (e.g. ubuntu-26.04 -> ubuntu@26.04)
-    is looked up in artifacts.build.yaml, and finally a lone .charm file in the
-    charm root is used.
+    The tests don't pack the charm. If CHARM_PATH is set, that .charm file is
+    used, otherwise exactly one .charm file must exist in the charm root.
     """
     charm_path = os.environ.get("CHARM_PATH")
-    if not charm_path:
-        match = re.match(r"ubuntu-(\d+\.\d+)", os.environ.get("SPREAD_SYSTEM", ""))
-        if match:
-            charm_paths = request.getfixturevalue("charm_paths")
-            charm_path = charm_paths["canonical-livepatch-server-k8s"][f"ubuntu@{match.group(1)}"]
     if not charm_path:
         charm_dir = pathlib.Path()  # The current working directory is the charm root.
         charms = list(charm_dir.glob("*.charm"))
