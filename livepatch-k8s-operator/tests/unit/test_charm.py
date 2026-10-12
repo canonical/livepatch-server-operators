@@ -4,6 +4,7 @@
 """State-transition (Scenario) tests for the Livepatch k8s charm."""
 
 import dataclasses
+import json
 
 import pytest
 from ops import testing
@@ -385,6 +386,43 @@ def test_send_otlp_relation_sets_metrics_endpoint(context, base_state):
         endpoint="send-otlp",
         interface="otlp",
         remote_app_data={"endpoint": "otel-collector:4317", "protocol": "grpc", "insecure": "false"},
+    )
+    state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_OTEL_METRICS_OTLP_ENDPOINT"] == "otel-collector:4317"
+    assert env["LP_OTEL_METRICS_PROTOCOL"] == "grpc"
+    assert env["LP_OTEL_METRICS_INSECURE"] == "false"
+
+
+def test_send_otlp_relation_sets_metrics_endpoint_list_schema(context, base_state):
+    """arrange: leader unit with a send-otlp relation using the otlp `endpoints` list schema.
+    act: send-otlp relation-changed.
+    assert: the LP_OTEL_METRICS_* env vars reflect the metrics endpoint (grpc preferred).
+    """
+    relation = testing.Relation(
+        endpoint="send-otlp",
+        interface="otlp",
+        remote_app_data={
+            "endpoints": json.dumps(
+                [
+                    {
+                        "protocol": "http",
+                        "endpoint": "otel-collector:4318",
+                        "telemetries": ["metrics", "logs", "traces"],
+                        "insecure": True,
+                    },
+                    {
+                        "protocol": "grpc",
+                        "endpoint": "otel-collector:4317",
+                        "telemetries": ["metrics"],
+                        "insecure": False,
+                    },
+                ]
+            )
+        },
     )
     state_in = dataclasses.replace(testing.State(**base_state), relations=set(base_state["relations"]) | {relation})
 

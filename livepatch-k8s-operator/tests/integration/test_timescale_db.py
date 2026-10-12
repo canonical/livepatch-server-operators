@@ -71,9 +71,20 @@ def test_metrics_db_relation_broken(k8s_juju: jubilant.Juju):
     """Test behavior when MetricsDB relation is broken."""
     k8s_juju.remove_relation(f"{APP_NAME}:metrics-db", METRICS_OFFER_NAME)
 
-    wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=300)
+    # Wait for the app to settle AND the (cross-model) metrics-db relation to
+    # actually disappear from status. CMR removal can lag behind the app
+    # returning to active, so asserting on relations immediately after the app
+    # is active is racy.
+    def _relation_gone(status: jubilant.Status) -> bool:
+        relations = status.apps[APP_NAME].relations
+        return "metrics-db" not in relations or not relations["metrics-db"]
 
-    status = k8s_juju.status()
+    status = k8s_juju.wait(
+        lambda status: jubilant.all_active(status, APP_NAME) and _relation_gone(status),
+        error=lambda status: jubilant.any_error(status, APP_NAME),
+        timeout=300,
+    )
+
     assert status.apps[APP_NAME].app_status.current == ACTIVE_STATUS
 
     relations = status.apps[APP_NAME].relations

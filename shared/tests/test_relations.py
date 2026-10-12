@@ -1,6 +1,8 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+import json
+
 import pytest
 
 from livepatch_common.relations import (
@@ -57,6 +59,56 @@ def test_otlp_metrics_endpoint():
     data = {"endpoint": "http://otel:4318", "protocol": "grpc", "insecure": "false"}
     assert otlp_metrics_endpoint(data) == ("http://otel:4318", "grpc", False)
     assert otlp_metrics_endpoint({}) is None
+
+
+def test_otlp_metrics_endpoint_list_schema():
+    # The otlp provider publishes a JSON list under "endpoints"; the metrics
+    # endpoint is selected and grpc is preferred over http.
+    data = {
+        "endpoints": json.dumps(
+            [
+                {
+                    "protocol": "http",
+                    "endpoint": "http://otel:4318",
+                    "telemetries": ["metrics", "logs", "traces"],
+                    "insecure": True,
+                },
+                {
+                    "protocol": "grpc",
+                    "endpoint": "http://otel:4317",
+                    "telemetries": ["metrics"],
+                    "insecure": False,
+                },
+            ]
+        )
+    }
+    assert otlp_metrics_endpoint(data) == ("http://otel:4317", "grpc", False)
+
+
+def test_otlp_metrics_endpoint_list_requires_metrics():
+    # Endpoints that do not accept metrics are ignored (falls back to None).
+    data = {
+        "endpoints": json.dumps(
+            [{"protocol": "http", "endpoint": "http://otel:4318", "telemetries": ["logs"], "insecure": True}]
+        )
+    }
+    assert otlp_metrics_endpoint(data) is None
+
+
+def test_otlp_metrics_endpoint_list_takes_precedence_over_flat():
+    # When both schemas are present, the endpoints list wins.
+    data = {
+        "endpoint": "http://legacy:4318",
+        "endpoints": json.dumps(
+            [{"protocol": "http", "endpoint": "http://otel:4318", "telemetries": ["metrics"], "insecure": False}]
+        ),
+    }
+    assert otlp_metrics_endpoint(data) == ("http://otel:4318", "http", False)
+
+
+def test_otlp_metrics_endpoint_malformed_list_falls_back_to_flat():
+    data = {"endpoints": "not-json", "endpoint": "http://otel:4318"}
+    assert otlp_metrics_endpoint(data) == ("http://otel:4318", "http", True)
 
 
 def test_build_database_uri_attributes_not_ops_tied():
