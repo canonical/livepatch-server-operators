@@ -97,6 +97,9 @@ jobs:
         run: make sync
 
       - name: Build ${{ matrix.type }} ${{ matrix.name }}
+        env:
+          # ubuntu@26.04 is still experimental for the `charm` craft-parts plugin
+          CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS: "true"
         run: |
           opcli artifacts build \
             --${{ matrix.type }} ${{ matrix.name }} \

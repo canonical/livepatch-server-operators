@@ -15,13 +15,9 @@ description: |
   The purpose of the Livepatch Server is to pull in patch updates from
   Canonical and allow more fine-grained control of patch rollout to the
   machines running on your infrastructure.
-base: ubuntu@24.04
 platforms:
-  amd64:
-    build-on:
-    - amd64
-    build-for:
-    - amd64
+  ubuntu@24.04:amd64:
+  ubuntu@26.04:amd64:
 parts:
   charm:
     plugin: charm

@@ -9,15 +9,9 @@ backends:
   integration-test:
     type: integration-test
     systems:
-    # The K8s integration suite runs microk8s + an LXD-hosted controller +
-    # postgresql on the same host, which needs more disk than the default
-    # GitHub-hosted `ubuntu-latest` runner provides (postgresql-k8s blocks on
-    # "<10% free space on pgdata volume"). Pin these to the team's larger
-    # self-hosted flavour (8 CPU / 32 GiB / 100 GiB). The remaining systems are
-    # only used by the (currently disabled) machine suite.
-    - ubuntu-26.04:
-        runner: [self-hosted, linux, amd64, large, resolute]
     - ubuntu-24.04:
+        runner: [self-hosted, linux, amd64, large, resolute]
+    - ubuntu-26.04:
         runner: [self-hosted, linux, amd64, large, resolute]
     - ubuntu-20.04
     - ubuntu-18.04
@@ -68,7 +62,7 @@ integration-suites:
     # the machine side of cross-model relations), so no `--juju-controller` is set.
     pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
     pytest-environment-template: |
-      {% for build in artifacts.charms[0].builds if build.arch == arch %}
+      {% for build in artifacts.charms[0].builds if build.arch == arch and build.base == env.SPREAD_SYSTEM %}
       CHARM_PATH={{ build.path }}
       {% endfor %}
       LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
