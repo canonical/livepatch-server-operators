@@ -11,11 +11,11 @@ backends:
     systems:
     # The `-large` systems carry the disk-hungry tests (postgresql-k8s blocks on
     # "<10% free space on pgdata volume" on the default GitHub-hosted runner)
-    # and run on the team's self-hosted flavour (8 CPU / 32 GiB / 100 GiB).
+    # and run on the team's self-hosted medium flavour.
     - ubuntu-24.04-large:
-        runner: self-hosted-linux-amd64-resolute-large
+        runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-26.04-large:
-        runner: self-hosted-linux-amd64-resolute-large
+        runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-20.04
     - ubuntu-18.04
     - ubuntu-16.04
