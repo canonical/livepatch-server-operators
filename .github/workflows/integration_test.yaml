@@ -193,18 +193,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          conclusion=$(gh run view "${{ github.run_id }}" \
-            --repo "${{ github.repository }}" \
-            --json jobs \
-            --jq '
-              [.jobs[] | select(.name | test("(?:^|/ )Build (?:charm|rock|snap) .+ \\(")) | .conclusion] |
-              if any(. == "failure") then "failure"
-              elif any(. == "cancelled") then "cancelled"
-              else empty
-              end
-            ')
-          if [[ "$conclusion" =~ ^(failure|cancelled)$ ]]; then
-            echo "::error::Build failed — build job conclusion is '$conclusion'. Skipping test."
+          # Use the REST jobs endpoint rather than `gh run view --json jobs`:
+          # the latter's `jobs` field needs a newer gh than some (self-hosted)
+          # runners ship, whereas `gh api` is version-stable. Build jobs still in
+          # progress have a null conclusion and are ignored (match the previous
+          # fire-and-forget behaviour).
+          conclusions=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | test("(?:^|/ )Build (?:charm|rock|snap) .+ \\(")) | .conclusion')
+          if grep -qx "failure" <<<"$conclusions"; then
+            echo "::error::Build failed — a build job conclusion is 'failure'. Skipping test."
+            exit 1
+          fi
+          if grep -qx "cancelled" <<<"$conclusions"; then
+            echo "::error::Build cancelled — a build job conclusion is 'cancelled'. Skipping test."
             exit 1
           fi
 

@@ -13,12 +13,12 @@ backends:
     # postgresql on the same host, which needs more disk than the default
     # GitHub-hosted `ubuntu-latest` runner provides (postgresql-k8s blocks on
     # "<10% free space on pgdata volume"). Pin these to the team's larger
-    # self-hosted flavour. The remaining systems are only used by the (currently
-    # disabled) machine suite.
+    # self-hosted flavour (8 CPU / 32 GiB / 100 GiB). The remaining systems are
+    # only used by the (currently disabled) machine suite.
     - ubuntu-26.04:
-        runner: [self-hosted, linux, X64, xlarge, jammy]
+        runner: [self-hosted, linux, amd64, large, resolute]
     - ubuntu-24.04:
-        runner: [self-hosted, linux, X64, xlarge, jammy]
+        runner: [self-hosted, linux, amd64, large, resolute]
     - ubuntu-20.04
     - ubuntu-18.04
     - ubuntu-16.04
