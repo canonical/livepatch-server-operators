@@ -20,9 +20,10 @@ platforms:
   ubuntu@26.04:amd64:
 parts:
   charm:
-    plugin: charm
+    plugin: uv
     source: .
     build-snaps:
+    - astral-uv
     - rustup
     override-build: |-
       rustup default stable

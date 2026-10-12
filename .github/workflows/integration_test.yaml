@@ -38,7 +38,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Generate build matrix
         id: matrix
@@ -71,7 +74,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install LXD
         run: |
@@ -137,7 +143,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install spread
         run: |
@@ -184,7 +193,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install spread
         run: |
