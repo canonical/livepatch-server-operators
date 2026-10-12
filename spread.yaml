@@ -9,9 +9,14 @@ backends:
   integration-test:
     type: integration-test
     systems:
-    - ubuntu-24.04:
+    - ubuntu-24.04
+    - ubuntu-26.04
+    # The `-large` systems carry the disk-hungry tests (postgresql-k8s blocks on
+    # "<10% free space on pgdata volume" on the default GitHub-hosted runner)
+    # and run on the team's self-hosted flavour (8 CPU / 32 GiB / 100 GiB).
+    - ubuntu-24.04-large:
         runner: self-hosted-linux-amd64-resolute-large
-    - ubuntu-26.04:
+    - ubuntu-26.04-large:
         runner: self-hosted-linux-amd64-resolute-large
     - ubuntu-20.04
     - ubuntu-18.04
@@ -29,43 +34,58 @@ exclude:
 - .venv
 - .*_cache
 
+# `app-image` is a private GHCR image, so `prepare` writes a credentials file
+# that the tests hand to Juju, which turns it into a Kubernetes image pull
+# secret. Keeping the password in a file keeps it off the pytest command line.
+#
+# pytest-jubilant tears the per-module models down by default, so there is no
+# equivalent of pytest-operator's `--keep-models`/`--model` here; pass
+# `--no-juju-teardown`/`--juju-model` locally when you want to keep them.
+# `--juju-dump-logs` captures the full juju debug-log on failure before models
+# are torn down. The single controller is bootstrapped on LXD; the fixtures
+# select the controller/cloud per-model, so no `--juju-controller` is set.
+x-k8s-suite: &k8s-suite
+  working-dir: livepatch-k8s-operator/
+  backends:
+  - integration-test
+  auto-discover: false
+  prepare: |
+    if [ -n "${REGISTRY_PASSWORD}" ]; then
+      touch /home/ubuntu/.app-image-auth.yaml
+      chmod 0600 /home/ubuntu/.app-image-auth.yaml
+      chown ubuntu:ubuntu /home/ubuntu/.app-image-auth.yaml
+      cat > /home/ubuntu/.app-image-auth.yaml <<EOF
+    username: ${REGISTRY_USERNAME}
+    password: ${REGISTRY_PASSWORD}
+    EOF
+    fi
+  restore: |
+    rm -f /home/ubuntu/.app-image-auth.yaml
+  pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+  pytest-environment-template: |
+    LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
+
 # TODO: rework the machine suite once it is switched to jubilant
 integration-suites:
-  livepatch-k8s-operator/tests/integration/:
-    working-dir: livepatch-k8s-operator/
-    summary: livepatch-k8s-operator integration tests
+  # Light tests: GitHub-hosted runners.
+  livepatch-k8s-operator/tests/integration/light/:
+    <<: *k8s-suite
+    summary: livepatch-k8s-operator integration tests (light)
     systems: [ubuntu-24.04, ubuntu-26.04]
-    backends:
-    - integration-test
-    auto-discover: true
-    # `app-image` is a private GHCR image, so write a credentials file that the
-    # tests hand to Juju, which turns it into a Kubernetes image pull secret.
-    # Keeping the password in a file keeps it off the pytest command line.
-    prepare: |
-      if [ -n "${REGISTRY_PASSWORD}" ]; then
-        touch /home/ubuntu/.app-image-auth.yaml
-        chmod 0600 /home/ubuntu/.app-image-auth.yaml
-        chown ubuntu:ubuntu /home/ubuntu/.app-image-auth.yaml
-        cat > /home/ubuntu/.app-image-auth.yaml <<EOF
-      username: ${REGISTRY_USERNAME}
-      password: ${REGISTRY_PASSWORD}
-      EOF
-      fi
-    restore: |
-      rm -f /home/ubuntu/.app-image-auth.yaml
-    # pytest-jubilant tears the per-module models down by default, so there is
-    # no equivalent of pytest-operator's `--keep-models`/`--model` here; pass
-    # `--no-juju-teardown`/`--juju-model` locally when you want to keep them.
-    # `--juju-dump-logs` captures the full juju debug-log on failure before models are torn down.
-    # The single controller is bootstrapped on LXD; the fixtures select the
-    # controller/cloud per-model (K8s cloud for the charm, native `localhost` for
-    # the machine side of cross-model relations), so no `--juju-controller` is set.
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
-    pytest-environment-template: |
-      {% for build in artifacts.charms[0].builds if build.arch == arch and build.base == env.SPREAD_SYSTEM %}
-      CHARM_PATH={{ build.path }}
-      {% endfor %}
-      LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
+    environment:
+      MODULE/test_airgapped: tests/integration/test_airgapped.py
+      MODULE/test_ingress: tests/integration/test_ingress.py
+      MODULE/test_otlp: tests/integration/test_otlp.py
+      # TODO: uncomment when there is a latest stable release to upgrade from.
+      # MODULE/test_upgrade: tests/integration/test_upgrade.py
+  # Heavy tests (postgresql-k8s needs the disk): self-hosted large runners.
+  livepatch-k8s-operator/tests/integration/heavy/:
+    <<: *k8s-suite
+    summary: livepatch-k8s-operator integration tests (heavy)
+    systems: [ubuntu-24.04-large, ubuntu-26.04-large]
+    environment:
+      MODULE/test_charm: tests/integration/test_charm.py
+      MODULE/test_timescale_db: tests/integration/test_timescale_db.py
   # TODO: the machine suite is temporarily disabled while the k8s cross-model
   # tests are being stabilised; re-enable once it is switched to jubilant.
   # livepatch-machine-operator/tests/integration/:
