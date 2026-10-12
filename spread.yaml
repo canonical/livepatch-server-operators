@@ -10,9 +10,9 @@ backends:
     type: integration-test
     systems:
     - ubuntu-24.04:
-        runner: [self-hosted, linux, amd64, large, resolute]
+        runner: self-hosted-linux-amd64-resolute-large
     - ubuntu-26.04:
-        runner: [self-hosted, linux, amd64, large, resolute]
+        runner: self-hosted-linux-amd64-resolute-large
     - ubuntu-20.04
     - ubuntu-18.04
     - ubuntu-16.04
