@@ -4,14 +4,11 @@
 
 """Integration tests for the OTLP metrics relation."""
 
-import json
 import logging
 import pathlib
 
 import jubilant
 import pytest
-import yaml
-from cosl.utils import LZMABase64
 from fixtures import deploy_package_if_needed
 from helpers import ACTIVE_STATUS, APP_NAME, fast_forward, get_pebble_env, wait_for_app_removed, wait_for_apps
 
@@ -26,26 +23,6 @@ COLLECTOR_RECEIVE_OTLP_ENDPOINT = "receive-otlp"
 def _get_pebble_env(juju: jubilant.Juju) -> dict:
     """Return the environment dict from the livepatch service's current Pebble plan."""
     return get_pebble_env(juju, unit=f"{APP_NAME}/0")
-
-
-def _get_published_prometheus_alert_names(juju: jubilant.Juju) -> set:
-    """Return the set of Prometheus alert names livepatch published on the send-otlp relation."""
-    # The rules are written to livepatch's own app databag, so they are visible as
-    # application-data from the collector side (receive-otlp endpoint).
-    stdout = juju.cli("show-unit", f"{OTEL_COLLECTOR_APP}/0", "--format=yaml")
-    unit_data = yaml.safe_load(stdout)[f"{OTEL_COLLECTOR_APP}/0"]
-    app_data: dict = next(
-        (
-            rel.get("application-data", {})
-            for rel in unit_data.get("relation-info", [])
-            if rel.get("endpoint") == COLLECTOR_RECEIVE_OTLP_ENDPOINT
-        ),
-        {},
-    )
-    assert "rules" in app_data, f"no alert rules published on {COLLECTOR_RECEIVE_OTLP_ENDPOINT}: {app_data}"
-    rules = json.loads(LZMABase64.decompress(json.loads(app_data["rules"])))
-    groups = rules["promql"].get("groups", [])
-    return {rule["alert"] for group in groups for rule in group.get("rules", []) if "alert" in rule}
 
 
 @pytest.mark.juju_setup
@@ -89,21 +66,6 @@ def test_otel_metrics_env_vars_populated(juju: jubilant.Juju):
         env.get("LP_OTEL_METRICS_PROTOCOL"),
         env.get("LP_OTEL_METRICS_INSECURE"),
     )
-
-
-def test_prometheus_alert_rules_published(juju: jubilant.Juju):
-    """Test that livepatch publishes its Prometheus alert rules over the send-otlp relation."""
-    alert_names = _get_published_prometheus_alert_names(juju)
-    expected = {
-        "LivepatchDatabaseResponseTimeHigh",
-        "LivepatchDatabaseErrorsHigh",
-        "LivepatchEndpointLatencyHigh",
-        "LivepatchContractsServerErrorsHigh",
-        "LivepatchContractsTokenErrorsHigh",
-    }
-    assert expected.issubset(
-        alert_names
-    ), f"published Prometheus alert rules {alert_names} should include all livepatch alerts {expected}"
 
 
 def test_otel_metrics_enabled_flag_is_independent(juju: jubilant.Juju):

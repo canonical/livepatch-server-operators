@@ -38,7 +38,10 @@ CHARM_CONFIG = {
     "server.concurrency-limit": 50,
     "server.is-hosted": True,
     "server.log-level": "info",
-    "server.url-template": "http://livepatch:8080/v1/patches/{filename}",
+    # Use the charm's own K8s Service name (and port) so hosted-server responses
+    # advertise a patch URL that resolves in-cluster. The application is named
+    # APP_NAME, and the charm exposes its Service under `self.app.name`.
+    "server.url-template": f"http://{APP_NAME}:{APP_PORT}/v1/patches/{{filename}}",
 }
 
 
