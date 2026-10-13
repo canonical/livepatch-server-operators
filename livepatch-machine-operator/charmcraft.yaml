@@ -24,7 +24,6 @@ links:
     - https://discourse.ubuntu.com/t/ubuntu-livepatch-service/22723
 
 platforms:
-  ubuntu@16.04:amd64:
   ubuntu@18.04:amd64:
   ubuntu@20.04:amd64:
   ubuntu@22.04:amd64:

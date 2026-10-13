@@ -86,10 +86,6 @@ integration-suites:
   # unit of that base. All of them run on the same 24.04 host (the host OS is
   # irrelevant to the unit base), so there is one suite per base; CHARM_BASE
   # selects the matching build in the template below.
-  livepatch-machine-operator/tests/integration/ubuntu-16.04/:
-    <<: *machine-suite
-    environment:
-      CHARM_BASE: ubuntu@16.04
   livepatch-machine-operator/tests/integration/ubuntu-18.04/:
     <<: *machine-suite
     environment:
