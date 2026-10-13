@@ -59,8 +59,11 @@ PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
 
 
 def unit_address(status: jubilant.Status, app: str, unit: int = 0) -> str:
-    """Return the address of a unit."""
-    return status.apps[app].units[f"{app}/{unit}"].address
+    """Return the address of a machine unit.
+
+    Machine units report `public-address`; `address` is only populated for Kubernetes units.
+    """
+    return status.apps[app].units[f"{app}/{unit}"].public_address
 
 
 def unit_workload_message(status: jubilant.Status, app: str, unit: int = 0) -> str:
