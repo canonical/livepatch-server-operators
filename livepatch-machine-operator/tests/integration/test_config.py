@@ -16,7 +16,6 @@ from integration.helpers import (
     DATABASE_RELATION,
     DATABASE_RELATION_LEGACY,
     POSTGRES_NAME,
-    SCHEMA_UPGRADE_REQUIRED,
     STACK_BASE,
     unit_workload_message,
 )
@@ -79,8 +78,4 @@ def test_blocked_when_both_database_relations_active(juju: jubilant.Juju):
     assert "database" in unit_workload_message(juju.status(), APP_NAME)
 
     juju.remove_relation(f"{APP_NAME}:{DATABASE_RELATION_LEGACY}", f"{POSTGRES_NAME}:db")
-    juju.wait(
-        lambda status: jubilant.all_blocked(status, APP_NAME)
-        and unit_workload_message(status, APP_NAME) == SCHEMA_UPGRADE_REQUIRED,
-        timeout=10 * 60,
-    )
+    juju.wait(jubilant.all_active, error=jubilant.any_error, timeout=10 * 60)

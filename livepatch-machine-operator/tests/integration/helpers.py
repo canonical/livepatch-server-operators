@@ -36,7 +36,6 @@ WEBSITE_RELATION = "website"
 PRO_AIRGAPPED_RELATION = "pro-airgapped-server"
 
 AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
-SCHEMA_UPGRADE_REQUIRED = "Database not initialised, please run the schema-upgrade action."
 
 PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
     "QzE0TFpDQXh6MzZ3Nk5oNUVRRHVENmNtTkt0d1duOgogIGFjY291bnRJbmZvOgogICAgY3JlYXRlZEF0OiAiMjAyMi0wNS0x"
@@ -60,8 +59,8 @@ PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
 
 
 def unit_address(status: jubilant.Status, app: str, unit: int = 0) -> str:
-    """Return the public address of a unit."""
-    return status.apps[app].units[f"{app}/{unit}"].public_address
+    """Return the address of a unit."""
+    return status.apps[app].units[f"{app}/{unit}"].address
 
 
 def unit_workload_message(status: jubilant.Status, app: str, unit: int = 0) -> str:
@@ -91,7 +90,7 @@ def assert_haproxy_healthy(status: jubilant.Status, app: str = HAPROXY_NAME, uni
 
 
 def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
-    """Deploy the full stack and walk the charm through its guard sequence."""
+    """Deploy the full stack and walk the charm through its guard sequence to active."""
     juju.deploy(
         charm,
         app=APP_NAME,
@@ -127,18 +126,8 @@ def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
     integrate_postgres(juju)
     integrate_haproxy(juju)
 
-    LOGGER.info("Waiting for the charm to block on the pending schema upgrade")
-    juju.wait(
-        lambda status: jubilant.all_blocked(status, APP_NAME)
-        and unit_workload_message(status, APP_NAME) == SCHEMA_UPGRADE_REQUIRED,
-        timeout=10 * 60,
-    )
-
-    LOGGER.info("Running the schema-upgrade action")
-    task = run_schema_upgrade(juju)
-    assert task.results["schema-upgrade-required"] == "False"
-
-    return juju.wait(jubilant.all_active, error=jubilant.any_error, timeout=5 * 60)
+    LOGGER.info("Waiting for the charm to migrate the schema and become active")
+    return juju.wait(jubilant.all_active, error=jubilant.any_error, timeout=10 * 60)
 
 
 def scale(juju: jubilant.Juju, app: str, count: int) -> jubilant.Status:

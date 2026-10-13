@@ -14,12 +14,17 @@ LOGGER = logging.getLogger(__name__)
 
 CHARM_PATH_ENV_VAR = "CHARM_PATH"
 CHARM_BASE_ENV_VAR = "CHARM_BASE"
+DEFAULT_CHARM_BASE = "ubuntu@22.04"
+
+
+def _charm_base() -> str:
+    """Return the base of the charm under test, matching `helpers.CHARM_BASE`."""
+    return os.environ.get(CHARM_BASE_ENV_VAR) or DEFAULT_CHARM_BASE
 
 
 def _local_charms() -> list[Path]:
-    """Return the `.charm` files present in the charm root, narrowed to CHARM_BASE when it is set."""
-    base = os.environ.get(CHARM_BASE_ENV_VAR)
-    pattern = f"*{base}-*.charm" if base else "*.charm"
+    """Return the `.charm` files present in the charm root, for the base under test."""
+    pattern = f"*{_charm_base()}-*.charm"
     return sorted(path.resolve() for path in Path().glob(pattern))
 
 
@@ -27,9 +32,7 @@ def build_charm() -> Path:
     """Pack the charm with `charmcraft` and return the resulting path."""
     LOGGER.info("Packing charm with charmcraft")
     command = ["charmcraft", "pack", "--project-dir", ".", "--verbosity=brief"]
-    base = os.environ.get(CHARM_BASE_ENV_VAR)
-    if base:
-        command += ["--platform", f"{base}:amd64"]
+    command += ["--platform", f"{_charm_base()}:amd64"]
     subprocess.run(command, check=True)  # nosec B603, B607
 
     charms = _local_charms()
