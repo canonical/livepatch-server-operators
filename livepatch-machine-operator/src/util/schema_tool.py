@@ -4,7 +4,7 @@
 """Schema tool action."""
 
 import subprocess  # nosec
-from typing import Tuple
+from typing import Optional, Tuple
 
 from constants.errors import SCHEMA_VERSION_CHECK_ERROR
 from constants.snap import (
@@ -23,7 +23,7 @@ class SchemaToolError(RuntimeError):
     """Raised when a schema-tool command fails unexpectedly."""
 
 
-def upgrade_required(db_uri: str, target: str | None = None) -> bool:
+def upgrade_required(db_uri: str, target: Optional[str] = None) -> bool:
     """Check whether the database schema needs upgrading.
 
     Args:
@@ -89,7 +89,7 @@ def check_schema_version(db_uri: str) -> Tuple[bool, str]:
     return False, result
 
 
-def run_schema_upgrade(master_uri: str, target: str | None = None) -> str:
+def run_schema_upgrade(master_uri: str, target: Optional[str] = None) -> str:
     """Run a schema upgrade against the desired Postgres URI.
 
     Args:
