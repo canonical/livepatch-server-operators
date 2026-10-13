@@ -12,11 +12,12 @@ import pytest
 from integration.helpers import (
     APP_NAME,
     AWAIT_POSTGRES_RELATION,
-    BASE,
+    CHARM_BASE,
     DATABASE_RELATION,
     DATABASE_RELATION_LEGACY,
     POSTGRES_NAME,
     SCHEMA_UPGRADE_REQUIRED,
+    STACK_BASE,
     unit_workload_message,
 )
 
@@ -26,8 +27,8 @@ VALID_URL_TEMPLATE = "http://livepatch:8080/v1/patches/{filename}"
 @pytest.mark.juju_setup
 def test_deploy_for_config_guards(juju: jubilant.Juju, charm: pathlib.Path):
     """Deploy the charm and PostgreSQL without integrating them."""
-    juju.deploy(charm, app=APP_NAME, num_units=1, base=BASE)
-    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=BASE)
+    juju.deploy(charm, app=APP_NAME, num_units=1, base=CHARM_BASE)
+    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=STACK_BASE)
     juju.wait(lambda status: jubilant.all_active(status, POSTGRES_NAME), timeout=15 * 60)
     juju.wait(lambda status: jubilant.all_blocked(status, APP_NAME), timeout=10 * 60)
 

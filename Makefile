@@ -5,9 +5,10 @@
 SHARED := $(CURDIR)/shared
 K8S := livepatch-k8s-operator
 MACHINE := livepatch-machine-operator
+MACHINE_BASES := 16.04 18.04 20.04 22.04 24.04 26.04
 
 .PHONY: sync pack unit-test unit-test-shared unit-test-k8s unit-test-machine \
-	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-spread
+	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-run-machine-suites opcli-spread
 
 CONCIERGE := concierge-juju3.yaml
 
@@ -23,7 +24,7 @@ sync:
 
 pack: sync
 	cd $(K8S) && CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true charmcraft pack
-	cd $(MACHINE) && charmcraft pack
+	cd $(MACHINE) && CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true charmcraft pack
 
 # Unit tests. Each per-charm target re-runs sync so the staged copies of
 # shared/livepatch_common are current in the charm tree it tests.
@@ -53,7 +54,7 @@ opcli-test: opcli-build
 	opcli env provision -c $(CONCIERGE)
 	opcli artifacts push-images --missing-registry deploy
 	opcli pytest run --suite $(K8S)/tests/integration/
-	opcli pytest run --suite $(MACHINE)/tests/integration/
+	$(MAKE) opcli-run-machine-suites
 
 opcli-test-k8s: opcli-build
 	opcli env provision -c $(CONCIERGE)
@@ -62,4 +63,10 @@ opcli-test-k8s: opcli-build
 
 opcli-test-machine: opcli-build
 	opcli env provision -c $(CONCIERGE)
-	opcli pytest run --suite $(MACHINE)/tests/integration/
+	$(MAKE) opcli-run-machine-suites
+
+# One suite per base: CHARM_BASE selects the matching build, as in spread.yaml.
+opcli-run-machine-suites:
+	for base in $(MACHINE_BASES); do \
+		CHARM_BASE=ubuntu@$$base opcli pytest run --suite $(MACHINE)/tests/integration/ubuntu-$$base/ || exit 1; \
+	done

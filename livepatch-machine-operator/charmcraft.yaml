@@ -23,17 +23,13 @@ links:
     - https://ubuntu.com/security/livepatch
     - https://discourse.ubuntu.com/t/ubuntu-livepatch-service/22723
 
-bases:
-  - build-on:
-      - name: "ubuntu"
-        channel: "22.04"
-        architectures:
-          - amd64
-    run-on:
-      - name: "ubuntu"
-        channel: "22.04"
-        architectures:
-          - amd64
+platforms:
+  ubuntu@16.04:amd64:
+  ubuntu@18.04:amd64:
+  ubuntu@20.04:amd64:
+  ubuntu@22.04:amd64:
+  ubuntu@24.04:amd64:
+  ubuntu@26.04:amd64:
 
 requires:
   # Note: The same relation to postgres is used for both

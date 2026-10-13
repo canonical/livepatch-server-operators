@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -21,7 +22,10 @@ LOGGER = logging.getLogger(__name__)
 METADATA = yaml.safe_load(Path("./charmcraft.yaml").read_text())
 APP_NAME = METADATA["name"]
 
-BASE = "ubuntu@22.04"
+# postgresql and haproxy only publish a limited set of bases, so the rest of the
+# stack stays on one base while the charm under test runs on CHARM_BASE.
+STACK_BASE = "ubuntu@22.04"
+CHARM_BASE = os.environ.get("CHARM_BASE") or STACK_BASE
 POSTGRES_NAME = "postgresql"
 HAPROXY_NAME = "haproxy"
 PRO_AIRGAPPED_SERVER_NAME = "pro-airgapped-server"
@@ -92,11 +96,11 @@ def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
         charm,
         app=APP_NAME,
         num_units=1,
-        base=BASE,
+        base=CHARM_BASE,
         config={"patch-storage.type": "postgres"},
     )
-    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=BASE)
-    juju.deploy(HAPROXY_NAME, num_units=1, base=BASE)
+    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=STACK_BASE)
+    juju.deploy(HAPROXY_NAME, num_units=1, base=STACK_BASE)
 
     LOGGER.info("Waiting for postgresql and haproxy")
     juju.wait(lambda status: jubilant.all_active(status, POSTGRES_NAME, HAPROXY_NAME), timeout=15 * 60)

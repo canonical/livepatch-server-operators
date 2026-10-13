@@ -13,6 +13,7 @@ import pytest
 from integration.helpers import (
     APP_NAME,
     AWAIT_POSTGRES_RELATION,
+    CHARM_BASE,
     assert_haproxy_healthy,
     assert_livepatch_healthy,
     deploy_to_active,
@@ -60,7 +61,7 @@ def test_charm_redeploy(juju: jubilant.Juju, charm: pathlib.Path):
         charm,
         app=APP_NAME,
         num_units=1,
-        base="ubuntu@22.04",
+        base=CHARM_BASE,
         config={
             "patch-storage.type": "postgres",
             "server.url-template": "http://livepatch:8080/v1/patches/{filename}",

@@ -16,9 +16,6 @@ backends:
         runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-26.04-large:
         runner: self-hosted-linux-amd64-noble-medium
-    - ubuntu-20.04
-    - ubuntu-18.04
-    - ubuntu-16.04
 environment:
   CONCIERGE: '$(HOST: echo "${CONCIERGE:-concierge-juju3.yaml}")'
   OPCLI_GIT_REF: '$(HOST: echo "${OPCLI_GIT_REF:-main}")'
@@ -31,6 +28,21 @@ exclude:
 - .tox
 - .venv
 - .*_cache
+
+x-machine-suite: &machine-suite
+  discover-path: livepatch-machine-operator/tests/integration/
+  working-dir: livepatch-machine-operator/
+  summary: livepatch-machine-operator integration tests
+  systems: [ubuntu-24.04-large]
+  backends:
+  - integration-test
+  auto-discover: true
+  pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+  pytest-environment-template: |
+    {% for build in artifacts.charms[1].builds if build.arch == arch and build.base == env.get("CHARM_BASE", "") %}
+    CHARM_PATH={{ build.path }}
+    {% endfor %}
+    CHARM_BASE={{ env.get("CHARM_BASE", "") }}
 
 integration-suites:
   # Every test deploys postgresql-k8s, which blocks on "<10% free space on
@@ -70,15 +82,31 @@ integration-suites:
       CHARM_PATH={{ build.path }}
       {% endfor %}
       LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
-  livepatch-machine-operator/tests/integration/:
-    working-dir: livepatch-machine-operator/
-    summary: livepatch-machine-operator integration tests
-    systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04-large, ubuntu-26.04-large] # large system coverage to ensure backwards compatibility with the old machine charm.
-    backends:
-    - integration-test
-    auto-discover: true
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs --juju-model testing'
-    pytest-environment-template: |
-      {% for build in artifacts.charms[1].builds if build.arch == arch %}
-      CHARM_PATH={{ build.path }}
-      {% endfor %}
+  # The machine charm is built once per base and each build is deployed on a
+  # unit of that base. All of them run on the same 24.04 host (the host OS is
+  # irrelevant to the unit base), so there is one suite per base; CHARM_BASE
+  # selects the matching build in the template below.
+  livepatch-machine-operator/tests/integration/ubuntu-16.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@16.04
+  livepatch-machine-operator/tests/integration/ubuntu-18.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@18.04
+  livepatch-machine-operator/tests/integration/ubuntu-20.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@20.04
+  livepatch-machine-operator/tests/integration/ubuntu-22.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@22.04
+  livepatch-machine-operator/tests/integration/ubuntu-24.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@24.04
+  livepatch-machine-operator/tests/integration/ubuntu-26.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@26.04
