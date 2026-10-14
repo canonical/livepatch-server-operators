@@ -10,14 +10,15 @@ backends:
     type: integration-test
     systems:
     # The `-large` systems carry the disk-hungry tests (postgresql-k8s blocks on
-    # "<10% free space on pgdata volume" on the default GitHub-hosted runner)
-    # and run on the team's self-hosted xlarge flavour so MicroK8s, the gateway
-    # charms and the LXD machine needed by the airgapped test have CPU and
-    # memory headroom.
+    # "<10% free space on pgdata volume" on the default GitHub-hosted runner).
+    # They stay on the team's self-hosted medium flavour: on xlarge MicroK8s
+    # reports ready in ~30s, and concierge's `microk8s stop` for the image
+    # registry then races snapd's still-pending service-control change. The
+    # slower medium hosts take ~4.5min to become ready, which hides the race.
     - ubuntu-24.04-large:
-        runner: self-hosted-linux-amd64-noble-xlarge
+        runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-26.04-large:
-        runner: self-hosted-linux-amd64-noble-xlarge
+        runner: self-hosted-linux-amd64-noble-medium
   integration-test-machine:
     type: integration-test
     systems:

@@ -175,9 +175,7 @@ jobs:
       packages: read
     strategy:
       fail-fast: false
-      # Cap simultaneous spread tasks so provisioning (LXD/MicroK8s image pulls
-      # and Juju agent installs) isn't starved by the whole 32-job matrix at once.
-      max-parallel: 8
+      max-parallel: 16
       matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
@@ -261,7 +259,16 @@ jobs:
             if [ "$attempt" -lt "$max_attempts" ] \
               && grep -q 'snap "microk8s" has "service-control" change in progress' "$log"; then
               echo "::warning::MicroK8s was still settling during provisioning; retrying (attempt $attempt of $max_attempts)."
-              sleep 30
+              # Wait for snapd to finish applying the pending MicroK8s change,
+              # otherwise concierge races the same "service-control" change again.
+              for _ in $(seq 1 60); do
+                sudo snap changes | grep -q Doing || break
+                sleep 5
+              done
+              # spread refuses to re-send project content to a non-empty remote
+              # project dir, and the CI backend has no discard step to clear the
+              # one left behind by the failed attempt.
+              sudo rm -rf /home/ubuntu/proj
               continue
             fi
             exit 1
