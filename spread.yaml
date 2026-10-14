@@ -60,6 +60,27 @@ x-machine-suite: &machine-suite
     {% endfor %}{% endfor %}
     CHARM_BASE={{ env.get("CHARM_BASE", "") }}
 
+x-machine-k8s-suite: &machine-k8s-suite
+  # Cross-model observability tests: the machine charm on LXD relates to an
+  # OpenTelemetry Collector deployed on K8s. They need LXD *and* MicroK8s, so
+  # they use the K8s backend (`concierge-juju3.yaml`) and the `-large` systems,
+  # and live in their own discover-path so the plain machine suites never pay
+  # for MicroK8s. As with the machine suites, every per-base suite runs the same
+  # set on a unit of that base, selected by CHARM_BASE.
+  discover-path: livepatch-machine-operator/tests/integration_k8s/
+  working-dir: livepatch-machine-operator/
+  summary: livepatch-machine-operator cross-model observability tests
+  systems: [ubuntu-24.04-large]
+  backends:
+  - integration-test
+  auto-discover: true
+  pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+  pytest-environment-template: |
+    {% for charm in artifacts.charms if charm.name == "canonical-livepatch-server" %}{% for build in charm.builds if build.arch == arch and build.base == env.get("CHARM_BASE", "") %}
+    CHARM_PATH={{ build.path }}
+    {% endfor %}{% endfor %}
+    CHARM_BASE={{ env.get("CHARM_BASE", "") }}
+
 integration-suites:
   # Every test deploys postgresql-k8s, which blocks on "<10% free space on
   # pgdata volume" on GitHub-hosted runners, so all run on the `-large` systems.
@@ -116,5 +137,21 @@ integration-suites:
       CHARM_BASE: ubuntu@24.04
   livepatch-machine-operator/tests/integration/ubuntu-26.04/:
     <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@26.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-20.04/:
+    <<: *machine-k8s-suite
+    environment:
+      CHARM_BASE: ubuntu@20.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-22.04/:
+    <<: *machine-k8s-suite
+    environment:
+      CHARM_BASE: ubuntu@22.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-24.04/:
+    <<: *machine-k8s-suite
+    environment:
+      CHARM_BASE: ubuntu@24.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-26.04/:
+    <<: *machine-k8s-suite
     environment:
       CHARM_BASE: ubuntu@26.04

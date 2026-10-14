@@ -105,7 +105,6 @@ make unit-test-shared    # shared/tests against shared/livepatch_common
 make unit-test-k8s       # livepatch-k8s-operator
 make unit-test-machine   # livepatch-machine-operator
 ```
-
 ## License
 
 These charms are distributed under the Apache License, Version 2.0.

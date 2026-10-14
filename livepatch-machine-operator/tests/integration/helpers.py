@@ -34,6 +34,15 @@ DATABASE_RELATION = "database"
 DATABASE_RELATION_LEGACY = "database-legacy"
 WEBSITE_RELATION = "website"
 PRO_AIRGAPPED_RELATION = "pro-airgapped-server"
+METRICS_DB_RELATION = "metrics-db"
+SEND_OTLP_RELATION = "send-otlp"
+
+SNAP_NAME = "canonical-livepatch-server"
+
+# `server.url-template` only feeds patch download URLs back to clients, which
+# none of these tests fetch. A static placeholder keeps the database and OTLP
+# suites from having to depend on HAProxy just to reach active.
+FAKE_URL_TEMPLATE = "http://livepatch:8080/v1/patches/{filename}"
 
 AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
 
@@ -67,6 +76,36 @@ def unit_workload_message(status: jubilant.Status, app: str, unit: int | None = 
     return status.apps[app].units[_unit_name(status, app, unit)].workload_status.message
 
 
+def _flatten_snap_config(config: Any, prefix: str = "") -> dict[str, str]:
+    """Flatten the nested mapping returned by `snap get -d` into dotted keys."""
+    if not isinstance(config, dict):
+        return {prefix: "" if config is None else str(config)}
+    flattened: dict[str, str] = {}
+    for key, value in config.items():
+        flattened.update(_flatten_snap_config(value, f"{prefix}.{key}" if prefix else str(key)))
+    return flattened
+
+
+def get_snap_config(juju: jubilant.Juju, app: str = APP_NAME, unit: int | None = None) -> dict[str, str]:
+    """Return the charm-managed snap configuration as flat dotted keys."""
+    unit_name = _unit_name(juju.status(), app, unit)
+    task = juju.exec("snap", "get", SNAP_NAME, "-d", unit=unit_name)
+    output = task.stdout.strip()
+    if not output:
+        return {}
+    return _flatten_snap_config(json.loads(output))
+
+
+def website_relation_port(juju: jubilant.Juju, app: str = APP_NAME, unit: int | None = None) -> Optional[str]:
+    """Return the port a unit publishes on its `website` relation, if any."""
+    unit_name = _unit_name(juju.status(), app, unit)
+    info = juju.show_unit(unit_name)
+    for relation in info.relation_info:
+        if relation.endpoint == WEBSITE_RELATION and relation.local_unit:
+            return relation.local_unit.data.get("port")
+    return None
+
+
 def http_get_json(protocol: str, address: str, port: int, path: str = "") -> dict[str, Any]:
     """Perform a GET request against a unit and parse the response body as JSON."""
     url = urljoin(f"{protocol}://{address}:{port}", path)
@@ -86,6 +125,51 @@ def assert_haproxy_healthy(status: jubilant.Status, app: str = HAPROXY_NAME, uni
     """Assert that a Livepatch response is reachable through an HAProxy unit."""
     address = unit_address(status, app, unit)
     return http_get_json("http", address, 80, "debug/status")
+
+
+def deploy_core(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
+    """Deploy the charm and its database, reaching active without HAProxy.
+
+    Suites exercising a relation other than `website` use this so they do not
+    pay for an HAProxy machine. The url-template guard is satisfied up front
+    with a placeholder, leaving only the database relation to satisfy.
+    """
+    LOGGER.info("Deploying %s and %s", APP_NAME, POSTGRES_NAME)
+    juju.deploy(
+        charm,
+        app=APP_NAME,
+        num_units=1,
+        base=CHARM_BASE,
+        config={
+            "patch-storage.type": "postgres",
+            "server.url-template": FAKE_URL_TEMPLATE,
+        },
+    )
+    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=STACK_BASE)
+
+    LOGGER.info("Waiting for postgresql")
+    juju.wait(
+        lambda status: jubilant.all_active(status, POSTGRES_NAME),
+        error=jubilant.any_error,
+        timeout=30 * 60,
+    )
+
+    LOGGER.info("Waiting for the charm to block on the missing database relation")
+    juju.wait(
+        lambda status: jubilant.all_blocked(status, APP_NAME)
+        and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
+        timeout=10 * 60,
+    )
+
+    integrate_postgres(juju)
+
+    LOGGER.info("Waiting for the charm to migrate the schema and become active")
+    return juju.wait(
+        lambda status: jubilant.all_active(status, APP_NAME),
+        error=jubilant.any_error,
+        timeout=15 * 60,
+    )
 
 
 def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
