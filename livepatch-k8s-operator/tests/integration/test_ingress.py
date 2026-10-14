@@ -25,7 +25,7 @@ def test_charm_integrates(juju: jubilant.Juju):
     juju.config(APP_NAME, {"ingress-interface": "legacy-nginx-route"})
     juju.deploy("nginx-ingress-integrator", channel="latest/stable", trust=True)
     juju.integrate(f"{APP_NAME}:nginx-route", "nginx-ingress-integrator:nginx-route")
-    status = wait_for_apps(juju, [APP_NAME, "nginx-ingress-integrator"], status=ACTIVE_STATUS, timeout=600)
+    status = wait_for_apps(juju, [APP_NAME, "nginx-ingress-integrator"], status=ACTIVE_STATUS, timeout=900)
 
     assert status.apps["nginx-ingress-integrator"].app_status.current == ACTIVE_STATUS
 
@@ -50,7 +50,7 @@ def test_charm_integrates(juju: jubilant.Juju):
         juju,
         [APP_NAME, "gateway-route-configurator", "gateway-api-integrator", "self-signed-certificates"],
         status=ACTIVE_STATUS,
-        timeout=1200,
+        timeout=1800,
         successes=30,
     )
 

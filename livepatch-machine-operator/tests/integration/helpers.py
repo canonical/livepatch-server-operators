@@ -42,17 +42,29 @@ PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
 ).read_text().strip()
 
 
-def unit_address(status: jubilant.Status, app: str, unit: int = 0) -> str:
+def _unit_name(status: jubilant.Status, app: str, unit: int | None) -> str:
+    """Return `app/N`, defaulting to the app's lowest-numbered unit when `unit` is None.
+
+    Unit numbers keep increasing across a scale-down and a destroy/redeploy, so
+    callers must not assume the unit is `app/0`.
+    """
+    if unit is None:
+        units = status.apps[app].units
+        return sorted(units, key=lambda name: int(name.rsplit("/", 1)[1]))[0]
+    return f"{app}/{unit}"
+
+
+def unit_address(status: jubilant.Status, app: str, unit: int | None = None) -> str:
     """Return the address of a machine unit.
 
     Machine units report `public-address`; `address` is only populated for Kubernetes units.
     """
-    return status.apps[app].units[f"{app}/{unit}"].public_address
+    return status.apps[app].units[_unit_name(status, app, unit)].public_address
 
 
-def unit_workload_message(status: jubilant.Status, app: str, unit: int = 0) -> str:
+def unit_workload_message(status: jubilant.Status, app: str, unit: int | None = None) -> str:
     """Return the workload status message of a unit."""
-    return status.apps[app].units[f"{app}/{unit}"].workload_status.message
+    return status.apps[app].units[_unit_name(status, app, unit)].workload_status.message
 
 
 def http_get_json(protocol: str, address: str, port: int, path: str = "") -> dict[str, Any]:
@@ -64,7 +76,7 @@ def http_get_json(protocol: str, address: str, port: int, path: str = "") -> dic
     return json.loads(response.content.decode())
 
 
-def assert_livepatch_healthy(status: jubilant.Status, app: str = APP_NAME, unit: int = 0) -> dict[str, Any]:
+def assert_livepatch_healthy(status: jubilant.Status, app: str = APP_NAME, unit: int | None = None) -> dict[str, Any]:
     """Assert that a Livepatch unit's `debug/status` endpoint responds successfully."""
     address = unit_address(status, app, unit)
     return http_get_json("http", address, 8080, "debug/status")

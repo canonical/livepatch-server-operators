@@ -70,7 +70,6 @@ def test_charm_redeploy(juju: jubilant.Juju, charm: pathlib.Path):
 
     juju.wait(
         lambda status: jubilant.all_blocked(status, APP_NAME)
-        and f"{APP_NAME}/0" in status.apps[APP_NAME].units
         and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
         error=jubilant.any_error,
         timeout=10 * 60,

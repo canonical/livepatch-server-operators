@@ -108,7 +108,7 @@ def test_deploy(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib
         )
 
         logger.info(f"Waiting for {PRO_AIRGAPPED_SERVER_NAME}")
-        wait_for_apps(lxd_juju, [PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, timeout=600)
+        wait_for_apps(lxd_juju, [PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, timeout=1800)
 
         logger.info("Creating application offer for cross-model relation: %s", OFFER_NAME)
         lxd_juju.offer(PRO_AIRGAPPED_SERVER_NAME, endpoint=PRO_AIRGAPPED_SERVER_ENDPOINT, name=OFFER_NAME)
@@ -119,11 +119,11 @@ def test_deploy(k8s_juju: jubilant.Juju, lxd_juju: jubilant.Juju, charm: pathlib
         logger.info("Integrating Livepatch and pro-airgapped-server")
         k8s_juju.integrate(APP_NAME, OFFER_NAME)
         logger.info("Waiting for Livepatch")
-        wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=600)
+        wait_for_apps(k8s_juju, [APP_NAME], status=ACTIVE_STATUS, timeout=1800)
 
     with fast_forward(lxd_juju):
         logger.info(f"Waiting for {PRO_AIRGAPPED_SERVER_NAME}")
-        wait_for_apps(lxd_juju, [PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, timeout=600)
+        wait_for_apps(lxd_juju, [PRO_AIRGAPPED_SERVER_NAME], status=ACTIVE_STATUS, timeout=1800)
 
 
 def test_airgapped_contracts_integration(k8s_juju: jubilant.Juju):

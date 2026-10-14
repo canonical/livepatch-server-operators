@@ -11,15 +11,20 @@ backends:
     systems:
     # The `-large` systems carry the disk-hungry tests (postgresql-k8s blocks on
     # "<10% free space on pgdata volume" on the default GitHub-hosted runner)
-    # and run on the team's self-hosted medium flavour.
+    # and run on the team's self-hosted xlarge flavour so MicroK8s, the gateway
+    # charms and the LXD machine needed by the airgapped test have CPU and
+    # memory headroom.
     - ubuntu-24.04-large:
-        runner: self-hosted-linux-amd64-noble-medium
+        runner: self-hosted-linux-amd64-noble-xlarge
     - ubuntu-26.04-large:
-        runner: self-hosted-linux-amd64-noble-medium
+        runner: self-hosted-linux-amd64-noble-xlarge
   integration-test-machine:
     type: integration-test
     systems:
-    - ubuntu-24.04-large:
+    # The runner label is looked up by system name across all backends, so this
+    # must not reuse the k8s backend's `ubuntu-24.04-large` name: that would make
+    # the machine suites inherit the k8s runner.
+    - ubuntu-24.04-machine:
         runner: self-hosted-linux-amd64-noble-medium
     environment:
       CONCIERGE: concierge-machine-juju3.yaml
@@ -43,7 +48,7 @@ x-machine-suite: &machine-suite
   discover-path: livepatch-machine-operator/tests/integration/
   working-dir: livepatch-machine-operator/
   summary: livepatch-machine-operator integration tests
-  systems: [ubuntu-24.04-large]
+  systems: [ubuntu-24.04-machine]
   backends:
   - integration-test-machine
   auto-discover: true

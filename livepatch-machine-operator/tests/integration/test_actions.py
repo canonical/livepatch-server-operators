@@ -50,8 +50,9 @@ def test_set_basic_users_action(juju: jubilant.Juju):
         {"users": "alice:hunter2,bob:correcthorsebatterystaple"},
     )
 
-    # Juju keeps the action's dotted result key literally: results["auth.basic.users"].
-    hashed = task.results["auth.basic.users"]
+    # Juju treats dots in a result key as a path, so the dotted option name is
+    # returned nested: results["auth"]["basic"]["users"].
+    hashed = task.results["auth"]["basic"]["users"]
     users = dict(pair.split(":", 1) for pair in hashed.split(","))
     assert set(users) == {"alice", "bob"}
     for password_hash in users.values():
