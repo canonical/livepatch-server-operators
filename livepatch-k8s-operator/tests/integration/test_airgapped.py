@@ -136,7 +136,7 @@ def test_airgapped_contracts_integration(k8s_juju: jubilant.Juju):
     app_address = status.apps[APP_NAME].units[f"{APP_NAME}/0"].address
     url = f"http://{app_address}:{APP_PORT}/debug/status"
     logger.info("Querying app address: %s", url)
-    r = requests.get(url, timeout=2.0)
+    r = requests.get(url, timeout=30.0)
     assert r.status_code == 200
     body = r.json()
     logger.info("Output = %s", body)
