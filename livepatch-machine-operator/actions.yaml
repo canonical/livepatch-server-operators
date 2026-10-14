@@ -56,3 +56,46 @@ set-basic-users:
 
 restart:
   description: Restart livepatch service daemon.
+
+migrate-reactive-config:
+  description: |
+    Convert an exported reactive charm config to this charm's config format.
+
+    Returns new-config YAML under this application's name, plus removed-keys
+    and unrecognized-keys. Does not apply config, create secrets or migrate
+    databases. Use migrate-ops-config for an original Operator charm export.
+
+    Wrap the export as a string-valued parameter file:
+      jq -Rs '{"config-file": .}' old-config.yaml > migration-params.json
+      juju run <unit> migrate-reactive-config --params migration-params.json
+
+    Parameters and results remain in Juju action history and may contain
+    credentials. Handle exports according to your credential policy.
+  params:
+    config-file:
+      type: string
+      description: The contents of the old reactive charm's exported config file.
+  required: [config-file]
+
+migrate-ops-config:
+  description: |
+    Migrate an original Operator charm export by retaining options supported
+    by this charm. Preserves configured values and types, omits unset values,
+    and reports removed and unrecognized keys.
+
+    Returns new-config YAML under this application's name, plus removed-keys
+    and unrecognized-keys. Does not apply config, create secrets or migrate
+    databases. Effective snap-only settings must be checked separately.
+    Use migrate-reactive-config for a reactive charm export.
+
+    Wrap the export as a string-valued parameter file:
+      jq -Rs '{"config-file": .}' old-config.yaml > migration-params.json
+      juju run <unit> migrate-ops-config --params migration-params.json
+
+    Parameters and results remain in Juju action history and may contain
+    credentials. Handle exports according to your credential policy.
+  params:
+    config-file:
+      type: string
+      description: The contents of the original Operator charm's exported config file.
+  required: [config-file]

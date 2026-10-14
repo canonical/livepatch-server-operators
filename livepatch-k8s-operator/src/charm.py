@@ -63,7 +63,7 @@ def _patched_make_database_requirers(
 paas_charm.databases.make_database_requirers = _patched_make_database_requirers
 paas_charm.charm.make_database_requirers = _patched_make_database_requirers
 
-from legacy_constants import map_old_config_to_new_config
+from livepatch_common.config_migration import handle_migration_action
 from livepatch_common.config import SECRET_FALLBACK_OPTIONS, SECRET_GROUPS, SECRET_VALUE_KEY
 from livepatch_common.contracts import get_machine_token, get_proxy_dict, get_resource_token
 from livepatch_common.relations import (
@@ -385,7 +385,8 @@ class LivepatchCharm(paas_charm.go.Charm):
         self.framework.observe(self.on.schema_upgrade_action, self._on_schema_upgrade)
         self.framework.observe(self.on.schema_version_action, self._on_schema_version)
         self.framework.observe(self.on.restart_action, self._on_restart_action)
-        self.framework.observe(self.on.emit_updated_config_action, self._on_emit_updated_config)
+        self.framework.observe(self.on.migrate_reactive_config_action, self._on_migrate_reactive_config)
+        self.framework.observe(self.on.migrate_ops_config_action, self._on_migrate_ops_config)
 
     def restart(self, rerun_migrations: bool = False) -> None:
         """Reconfigure the workload, refreshing trusted CA certs first.
@@ -761,25 +762,17 @@ class LivepatchCharm(paas_charm.go.Charm):
         self.restart()
         event.set_results({"result": "restarted"})
 
-    def _on_emit_updated_config(self, event: ops.ActionEvent) -> None:
-        """Handle the emit-updated-config action: convert legacy reactive charm config."""
-        import yaml
+    def _on_migrate_reactive_config(self, event: ops.ActionEvent) -> None:
+        """Convert reactive options without applying the generated config."""
+        handle_migration_action(
+            event, source="reactive", config_root=self.app.name, supported_options=self.meta.config.keys()
+        )
 
-        config_content = event.params["config-file"]
-        try:
-            config_yaml = yaml.safe_load(config_content)
-            if not (isinstance(config_yaml, dict) and config_yaml.keys()):
-                event.fail(f"invalid config file format. Got content {config_content}")
-                return
-        except yaml.YAMLError as e:
-            event.fail(f"Failed to parse YAML: {e}")
-            return
-        try:
-            result = map_old_config_to_new_config(config_yaml)
-        except ValueError as e:
-            event.fail(f"Failed to map old config to new config: {e}")
-            return
-        event.set_results({"result": result})
+    def _on_migrate_ops_config(self, event: ops.ActionEvent) -> None:
+        """Filter original Operator options against this charm's config keys."""
+        handle_migration_action(
+            event, source="ops", config_root=self.app.name, supported_options=self.meta.config.keys()
+        )
 
 
 if __name__ == "__main__":

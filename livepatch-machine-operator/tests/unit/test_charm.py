@@ -686,6 +686,133 @@ class TestActions:
         with pytest.raises(testing.ActionFailed, match="No users provided"):
             ctx.run(ctx.on.action("set-basic-users", params={"users": ""}), state_in)
 
+    def test_migrate_reactive_config_action__success(self, ctx, snap_set):
+        """Convert an exported reactive-charm config.
+
+        Also exercises the removal of the unsupported legacy `psql_dbname` option.
+        """
+        ctx = testing.Context(
+            OperatorMachineCharm,
+            meta=yaml.safe_load((CHARM_ROOT / "charmcraft.yaml").read_text()),
+            config=yaml.safe_load((CHARM_ROOT / "config.yaml").read_text()),
+            actions=yaml.safe_load((CHARM_ROOT / "actions.yaml").read_text()),
+            app_name="migration-target",
+        )
+        state_in = _leader_state()
+        old_config = yaml.safe_dump(
+            {
+                "options": {
+                    "auth_basic_users": {"value": "admin:hash"},
+                    "url_template": {"value": "https://example.com/{filename}"},
+                    "psql_dbname": {"value": "livepatch"},
+                    "auth_lp_teams": {"value": "team"},
+                }
+            }
+        )
+        ctx.run(ctx.on.action("migrate-reactive-config", params={"config-file": old_config}), state_in)
+        result = ctx.action_results["result"]
+        new_config = yaml.safe_load(result["new-config"])
+        assert new_config == {
+            "migration-target": {
+                "auth.basic.enabled": True,
+                "auth.basic.users": "admin:hash",
+                "server.url-template": "https://example.com/{filename}",
+            }
+        }
+        assert "psql_dbname" in result["removed-keys"]
+        assert "auth_lp_teams" in result["removed-keys"]
+
+    def test_migrate_ops_config_action(self, snap_set):
+        """Retain supported Operator values without applying them to the destination."""
+        ctx = testing.Context(
+            OperatorMachineCharm,
+            meta=yaml.safe_load((CHARM_ROOT / "charmcraft.yaml").read_text()),
+            config=yaml.safe_load((CHARM_ROOT / "config.yaml").read_text()),
+            actions=yaml.safe_load((CHARM_ROOT / "actions.yaml").read_text()),
+            app_name="migration-target",
+        )
+        state_in = _leader_state()
+        source = yaml.safe_dump(
+            {
+                "settings": {
+                    "server.url-template": {"value": "https://example.com/{filename}"},
+                    "server.burst-limit": {"value": 0},
+                    "patch-sync.enabled": {"value": False},
+                    "auth.basic.users": {"value": ""},
+                    "auth.sso.enabled": {"value": True},
+                    "unknown.option": {"value": "x"},
+                }
+            }
+        )
+        state_out = ctx.run(ctx.on.action("migrate-ops-config", params={"config-file": source}), state_in)
+        result = ctx.action_results["result"]
+        assert yaml.safe_load(result["new-config"]) == {
+            "migration-target": {
+                "server.url-template": "https://example.com/{filename}",
+                "server.burst-limit": 0,
+                "patch-sync.enabled": False,
+                "auth.basic.users": "",
+            }
+        }
+        assert result["removed-keys"] == ["auth.sso.enabled"]
+        assert result["unrecognized-keys"] == ["unknown.option"]
+        assert state_out.config == state_in.config
+        assert state_out.relations == state_in.relations
+
+    @pytest.mark.parametrize(
+        "action,key,correct_action",
+        [
+            ("migrate-reactive-config", "server.burst-limit", "migrate-ops-config"),
+            ("migrate-ops-config", "burst_limit", "migrate-reactive-config"),
+        ],
+    )
+    def test_migration_action_rejects_wrong_source(self, ctx, snap_set, action, key, correct_action):
+        """Fail instead of emitting an empty config for the other source format."""
+        source = yaml.safe_dump({"settings": {key: {"value": 10}}})
+        with pytest.raises(testing.ActionFailed, match=correct_action):
+            ctx.run(ctx.on.action(action, params={"config-file": source}), _leader_state())
+
+    @pytest.mark.parametrize("action", ["migrate-reactive-config", "migrate-ops-config"])
+    def test_migration_action_invalid_yaml(self, ctx, snap_set, action):
+        """The action fails cleanly on unparsable YAML."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="Failed to parse YAML"):
+            ctx.run(
+                ctx.on.action(action, params={"config-file": "not: valid: yaml: :"}),
+                state_in,
+            )
+
+    @pytest.mark.parametrize("action", ["migrate-reactive-config", "migrate-ops-config"])
+    def test_migration_action_non_dict_yaml(self, ctx, snap_set, action):
+        """The action fails when the YAML is valid but not a mapping."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="invalid config file format") as exc_info:
+            ctx.run(
+                ctx.on.action(action, params={"config-file": "- sensitive-value\n- b\n"}),
+                state_in,
+            )
+        assert "sensitive-value" not in str(exc_info.value)
+
+    @pytest.mark.parametrize("action", ["migrate-reactive-config", "migrate-ops-config"])
+    def test_migration_action_no_options_key(self, ctx, snap_set, action):
+        """A mapping without an `options`/`settings` key fails cleanly."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="Failed to map old config to new config"):
+            ctx.run(
+                ctx.on.action(action, params={"config-file": "unexpected: value\n"}),
+                state_in,
+            )
+
+    @pytest.mark.parametrize("action", ["migrate-reactive-config", "migrate-ops-config"])
+    def test_migration_action_malformed_options(self, ctx, snap_set, action):
+        """Malformed option entries return a clean action failure."""
+        state_in = _leader_state()
+        with pytest.raises(testing.ActionFailed, match="Failed to map old config to new config: .*mapping"):
+            ctx.run(
+                ctx.on.action(action, params={"config-file": "options:\n  burst_limit: null\n"}),
+                state_in,
+            )
+
 
 class TestCustomCA:
     """Tests for custom CA configuration."""
