@@ -177,7 +177,7 @@ jobs:
       fail-fast: false
       # Cap simultaneous spread tasks so provisioning (LXD/MicroK8s image pulls
       # and Juju agent installs) isn't starved by the whole 32-job matrix at once.
-      max-parallel: 16
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
