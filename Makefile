@@ -11,6 +11,7 @@ MACHINE_BASES := 20.04 22.04 24.04 26.04
 	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-run-machine-suites opcli-spread
 
 CONCIERGE := concierge-juju3.yaml
+CONCIERGE_MACHINE := concierge-machine-juju3.yaml
 
 sync:
 	@test -n "$$(ls -A $(SHARED)/livepatch_common)" || (echo "error: empty $(SHARED)/livepatch_common" && exit 1)
@@ -62,7 +63,7 @@ opcli-test-k8s: opcli-build
 	opcli pytest run --suite $(K8S)/tests/integration/
 
 opcli-test-machine: opcli-build
-	opcli env provision -c $(CONCIERGE)
+	opcli env provision -c $(CONCIERGE_MACHINE)
 	$(MAKE) opcli-run-machine-suites
 
 # One suite per base: CHARM_BASE selects the matching build, as in spread.yaml.

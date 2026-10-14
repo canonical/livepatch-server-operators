@@ -16,6 +16,13 @@ backends:
         runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-26.04-large:
         runner: self-hosted-linux-amd64-noble-medium
+  integration-test-machine:
+    type: integration-test
+    systems:
+    - ubuntu-24.04-large:
+        runner: self-hosted-linux-amd64-noble-medium
+    environment:
+      CONCIERGE: concierge-machine-juju3.yaml
 environment:
   CONCIERGE: '$(HOST: echo "${CONCIERGE:-concierge-juju3.yaml}")'
   OPCLI_GIT_REF: '$(HOST: echo "${OPCLI_GIT_REF:-main}")'
@@ -35,7 +42,7 @@ x-machine-suite: &machine-suite
   summary: livepatch-machine-operator integration tests
   systems: [ubuntu-24.04-large]
   backends:
-  - integration-test
+  - integration-test-machine
   auto-discover: true
   pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
   pytest-environment-template: |

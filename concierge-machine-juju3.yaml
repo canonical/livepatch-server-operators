@@ -1,0 +1,14 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+juju:
+  channel: 3.6/stable
+  model-defaults:
+    test-mode: "true"
+    automatically-retry-hooks: "true"
+  extra-bootstrap-args: --config agent-stream=proposed
+
+providers:
+  lxd:
+    enable: true
+    bootstrap: true

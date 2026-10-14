@@ -20,7 +20,7 @@ env:
   # charm-ci v1.0.1
   OPCLI_GIT_REF: 58ae6614a3b143d4e57eff0fd1770e97d8c30fab
   BUILD_TIMEOUT_MINUTES: 60
-  SPREAD_JOBS_INCLUDE: "integration-test-ci:*"
+  SPREAD_JOBS_INCLUDE: "integration-test*-ci:*"
 
 jobs:
   build-matrix:
