@@ -96,10 +96,11 @@ def test_otel_metrics_enabled_flag_is_independent(juju: jubilant.Juju):
     config = get_snap_config(juju)
 
     # Presence of the relation must NOT turn exporting on; the operator has to
-    # set otel-metrics.enabled=true explicitly.
+    # set otel-metrics.enabled=true explicitly. The snap stores the boolean as
+    # the string "False" (Python's `str()`), not "false".
     assert (
-        config.get(KEY_OTLP_ENABLED) == "false"
-    ), f"{KEY_OTLP_ENABLED} should be 'false' after relating alone, got {config.get(KEY_OTLP_ENABLED)!r}"
+        config.get(KEY_OTLP_ENABLED) == "False"
+    ), f"{KEY_OTLP_ENABLED} should be 'False' after relating alone, got {config.get(KEY_OTLP_ENABLED)!r}"
 
 
 def test_otel_metrics_enabled_via_config(juju: jubilant.Juju):
@@ -111,7 +112,7 @@ def test_otel_metrics_enabled_via_config(juju: jubilant.Juju):
         timeout=5 * 60,
     )
 
-    assert get_snap_config(juju).get(KEY_OTLP_ENABLED) == "true"
+    assert get_snap_config(juju).get(KEY_OTLP_ENABLED) == "True"
 
     juju.config(APP_NAME, {"otel-metrics.enabled": "false"})
     juju.wait(
