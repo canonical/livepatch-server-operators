@@ -50,7 +50,8 @@ def test_set_basic_users_action(juju: jubilant.Juju):
         {"users": "alice:hunter2,bob:correcthorsebatterystaple"},
     )
 
-    hashed = task.results["auth.basic.users"]
+    hashed = task.results.get("auth.basic.users") or task.results.get("auth-basic-users")
+    assert hashed is not None, f"set-basic-users returned unexpected results: {task.results}"
     users = dict(pair.split(":", 1) for pair in hashed.split(","))
     assert set(users) == {"alice", "bob"}
     for password_hash in users.values():
