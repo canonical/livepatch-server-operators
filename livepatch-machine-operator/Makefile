@@ -16,7 +16,7 @@ sync:
 # Builds the machine operator charm
 build-machine-charm: sync
 	rm -f *.charm
-	charmcraft pack --project-dir ./ --verbosity=debug
+	CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true charmcraft pack --project-dir ./ --verbosity=debug
 
 # Deploys the machine bundle using a locally build charm
 deploy-machine-bundle: build-machine-charm

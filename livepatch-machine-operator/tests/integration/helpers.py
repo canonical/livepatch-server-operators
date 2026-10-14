@@ -38,24 +38,8 @@ PRO_AIRGAPPED_RELATION = "pro-airgapped-server"
 AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
 
 PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
-    "QzE0TFpDQXh6MzZ3Nk5oNUVRRHVENmNtTkt0d1duOgogIGFjY291bnRJbmZvOgogICAgY3JlYXRlZEF0OiAiMjAyMi0wNS0xMlQw"
-    "NjoyNzowM1oiCiAgICBpZDogYUFQWXc3M3hHCiAgICBuYW1lOiBhLmJAZXhhbXBsZS5jb20KICAgIHR5cGU6IHBlcnNvbmFsCiAg"
-    "Y29udHJhY3RJbmZvOgogICAgYWxsb3dhbmNlczoKICAgIC0gbWV0cmljOiB1bml0cwogICAgICB2YWx1ZTogMwogICAgY3JlYXRl"
-    "ZEF0OiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICBjcmVhdGVkQnk6ICIiCiAgICBlZmZlY3RpdmVGcm9tOiAiMjAyMi0wNS0x"
-    "MlQwNjoyNzowNFoiCiAgICBlZmZlY3RpdmVUbzogIjk5OTktMTItMzFUMDA6MDA6MDBaIgogICAgaWQ6IGNBWC0tb05kCiAgICBp"
-    "dGVtczoKICAgIC0gY29udHJhY3RJRDogY0FYLS1vTmQKICAgICAgY3JlYXRlZDogIjIwMjItMDUtMTJUMDY6Mjc6MDRaIgogICAg"
-    "ICBlZmZlY3RpdmVGcm9tOiAiMjAyMi0wNS0xMlQwNjoyNzowNFoiCiAgICAgIGVmZmVjdGl2ZVRvOiAiOTk5OS0xMi0zMVQwMDow"
-    "MDowMFoiCiAgICAgIGV4dGVybmFsSURzOiBudWxsCiAgICAgIGlkOiAzOTYyOTAKICAgICAgbGFzdE1vZGlmaWVkOiAiMjAyMi0w"
-    "NS0xMlQwNjoyNzowNFoiCiAgICAgIG1ldHJpYzogdW5pdHMKICAgICAgcmVhc29uOiBjb250cmFjdF9jcmVhdGVkCiAgICAgIHZh"
-    "bHVlOiAzCiAgICBuYW1lOiBhLmJAZXhhbXBsZS5jb20KICAgIG9yaWdpbjogZnJlZQogICAgcHJvZHVjdHM6CiAgICAtIGZyZWUK"
-    "ICAgIHJlc291cmNlRW50aXRsZW1lbnRzOgogICAgLSBhZmZvcmRhbmNlczoKICAgICAgICBhcmNoaXRlY3R1cmVzOgogICAgICAg"
-    "IC0gYW1kNjQKICAgICAgICAtIHg4Nl82NAogICAgICAgIHNlcmllczoKICAgICAgICAtIHhlbmlhbAogICAgICAgIC0gYmlvbmlj"
-    "CiAgICAgIGRpcmVjdGl2ZXM6CiAgICAgICAgYWRkaXRpb25hbFBhY2thZ2VzOgogICAgICAgIC0gdWJ1bnR1LWNvbW1vbmNyaXRl"
-    "cmlhCiAgICAgICAgYXB0S2V5OiA5RjkxMkRBREQ5OUVFMUNDNkJGRkZGMjQzQTE4NkU3MzNGNDkxQzQ2CiAgICAgICAgYXB0VVJM"
-    "OiBodHRwczovL2VzbS51YnVudHUuY29tL2NjCiAgICAgICAgc3VpdGVzOgogICAgICAgIC0geGVuaWFsCiAgICAgICAgLSBiaW9u"
-    "aWMKICAgICAgZW50aXRsZWQ6IHRydWUKICAgICAgb2JsaWdhdGlvbnM6CiAgICAgICAgZW5hYmxlQnlEZWZhdWx0OiBmYWxzZQog"
-    "ICAgICB0eXBlOiBjYy1lYWw="
-)
+    Path(__file__).parent / "data" / "pro-airgapped-manual-server-config.b64"
+).read_text().strip()
 
 
 def unit_address(status: jubilant.Status, app: str, unit: int = 0) -> str:
@@ -105,12 +89,19 @@ def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
     juju.deploy(HAPROXY_NAME, num_units=1, base=STACK_BASE)
 
     LOGGER.info("Waiting for postgresql and haproxy")
-    juju.wait(lambda status: jubilant.all_active(status, POSTGRES_NAME, HAPROXY_NAME), timeout=15 * 60)
+    # Machine provisioning on a loaded LXD host is slow (CI shows ~14 minutes
+    # just to allocate machines when many suites run in parallel).
+    juju.wait(
+        lambda status: jubilant.all_active(status, POSTGRES_NAME, HAPROXY_NAME),
+        error=jubilant.any_error,
+        timeout=30 * 60,
+    )
 
     LOGGER.info("Waiting for the charm to block on missing configuration")
     status = juju.wait(
         lambda status: jubilant.all_blocked(status, APP_NAME)
         and "server.url-template" in unit_workload_message(status, APP_NAME),
+        error=jubilant.any_error,
         timeout=10 * 60,
     )
 
@@ -123,6 +114,7 @@ def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
     juju.wait(
         lambda status: jubilant.all_blocked(status, APP_NAME)
         and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
         timeout=5 * 60,
     )
 

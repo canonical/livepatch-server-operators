@@ -28,8 +28,17 @@ def test_deploy_for_config_guards(juju: jubilant.Juju, charm: pathlib.Path):
     """Deploy the charm and PostgreSQL without integrating them."""
     juju.deploy(charm, app=APP_NAME, num_units=1, base=CHARM_BASE)
     juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=STACK_BASE)
-    juju.wait(lambda status: jubilant.all_active(status, POSTGRES_NAME), timeout=15 * 60)
-    juju.wait(lambda status: jubilant.all_blocked(status, APP_NAME), timeout=10 * 60)
+    # Machine provisioning is slow when many suites share the LXD host.
+    juju.wait(
+        lambda status: jubilant.all_active(status, POSTGRES_NAME),
+        error=jubilant.any_error,
+        timeout=30 * 60,
+    )
+    juju.wait(
+        lambda status: jubilant.all_blocked(status, APP_NAME),
+        error=jubilant.any_error,
+        timeout=10 * 60,
+    )
 
 
 def test_blocked_on_missing_url_template(juju: jubilant.Juju):
@@ -51,6 +60,7 @@ def test_blocked_on_invalid_server_address(juju: jubilant.Juju):
     juju.wait(
         lambda status: jubilant.all_blocked(status, APP_NAME)
         and "server.server-address" in unit_workload_message(status, APP_NAME),
+        error=jubilant.any_error,
         timeout=5 * 60,
     )
     assert "host:port" in unit_workload_message(juju.status(), APP_NAME)
@@ -59,6 +69,7 @@ def test_blocked_on_invalid_server_address(juju: jubilant.Juju):
     juju.wait(
         lambda status: jubilant.all_blocked(status, APP_NAME)
         and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
         timeout=5 * 60,
     )
 
@@ -73,6 +84,7 @@ def test_blocked_when_both_database_relations_active(juju: jubilant.Juju):
         lambda status: (
             jubilant.all_blocked(status, APP_NAME) and "not allowed" in unit_workload_message(status, APP_NAME)
         ),
+        error=jubilant.any_error,
         timeout=10 * 60,
     )
     assert "database" in unit_workload_message(juju.status(), APP_NAME)

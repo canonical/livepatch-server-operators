@@ -87,7 +87,7 @@ copies can't go stale. You only need to run `make sync` by hand if you invoke
 artifacts are:
 
 - `livepatch-k8s-operator/canonical-livepatch-server-k8s_amd64.charm`
-- `livepatch-machine-operator/canonical-livepatch-server_ubuntu-22.04-amd64.charm`
+- `livepatch-machine-operator/canonical-livepatch-server_ubuntu@22.04-amd64.charm`
 
 ### Running tests
 

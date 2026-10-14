@@ -77,7 +77,8 @@ parts:
       - rustc
       - cargo
     charm-binary-python-packages:
-      - anyio==4.6.2
+      - 'anyio==4.6.2; python_version >= "3.9"'
+      - 'anyio==3.7.1; python_version < "3.9"'
       - bcrypt==4.2.0
       - certifi==2024.8.30
       - cffi==1.17.1

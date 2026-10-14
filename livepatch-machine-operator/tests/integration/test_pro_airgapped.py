@@ -15,6 +15,7 @@ from integration.helpers import (
     PRO_AIRGAPPED_MANUAL_SERVER_CONFIG,
     PRO_AIRGAPPED_RELATION,
     PRO_AIRGAPPED_SERVER_NAME,
+    STACK_BASE,
     assert_haproxy_healthy,
     assert_livepatch_healthy,
     deploy_to_active,
@@ -37,11 +38,17 @@ def test_integration_with_pro_airgapped_server(juju: jubilant.Juju):
     juju.deploy(
         PRO_AIRGAPPED_SERVER_NAME,
         num_units=1,
+        base=STACK_BASE,
         config={
             "manual-server-config": PRO_AIRGAPPED_MANUAL_SERVER_CONFIG,
         },
     )
-    juju.wait(lambda status: jubilant.all_active(status, PRO_AIRGAPPED_SERVER_NAME), timeout=10 * 60)
+    # Machine provisioning is slow when many suites share the LXD host.
+    juju.wait(
+        lambda status: jubilant.all_active(status, PRO_AIRGAPPED_SERVER_NAME),
+        error=jubilant.any_error,
+        timeout=20 * 60,
+    )
 
     logger.info("Integrating %s and %s", APP_NAME, PRO_AIRGAPPED_SERVER_NAME)
     juju.integrate(f"{APP_NAME}:{PRO_AIRGAPPED_RELATION}", f"{PRO_AIRGAPPED_SERVER_NAME}:livepatch-server")

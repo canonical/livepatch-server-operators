@@ -33,11 +33,18 @@ def build_charm() -> Path:
     LOGGER.info("Packing charm with charmcraft")
     command = ["charmcraft", "pack", "--project-dir", ".", "--verbosity=brief"]
     command += ["--platform", f"{_charm_base()}:amd64"]
-    subprocess.run(command, check=True)  # nosec B603, B607
+    env = {
+        **os.environ,
+        # ubuntu@26.04 is still experimental for the `charm` craft-parts plugin.
+        "CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS": "true",
+    }
+    subprocess.run(command, check=True, env=env)  # nosec B603, B607
 
     charms = _local_charms()
-    assert charms, f"No charms were found in {Path().absolute()} after packing"
-    assert len(charms) == 1, f"Found more than one charm {charms}"
+    if not charms:
+        raise FileNotFoundError(f"No charms were found in {Path().absolute()} after packing")
+    if len(charms) != 1:
+        raise RuntimeError(f"Found more than one charm {charms}")
     return charms[0]
 
 
@@ -69,7 +76,8 @@ def resolve_charm() -> Path:
     charm = os.environ.get(CHARM_PATH_ENV_VAR)
     if charm:
         path = _resolve_charm_path(charm)
-        assert path.is_file(), f"{path} is not a file"
+        if not path.is_file():
+            raise FileNotFoundError(f"{path} is not a file")
         LOGGER.info("Using charm file from %s: %s", CHARM_PATH_ENV_VAR, path)
         return path
 
@@ -77,8 +85,10 @@ def resolve_charm() -> Path:
     if not charms:
         return build_charm()
 
-    assert len(charms) == 1, f"Found more than one charm {charms}"
+    if len(charms) != 1:
+        raise RuntimeError(f"Found more than one charm {charms}")
     path = charms[0]
-    assert path.is_file(), f"{path} is not a file"
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} is not a file")
     LOGGER.info("Using charm file discovered in the project root: %s", path)
     return path

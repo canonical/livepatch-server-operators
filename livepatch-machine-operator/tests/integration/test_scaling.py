@@ -54,7 +54,7 @@ def test_charm_redeploy(juju: jubilant.Juju, charm: pathlib.Path):
 
     logger.info("Destroying %s", APP_NAME)
     juju.remove_application(APP_NAME, destroy_storage=True, force=True)
-    juju.wait(lambda status: APP_NAME not in status.apps, timeout=10 * 60)
+    juju.wait(lambda status: APP_NAME not in status.apps, error=jubilant.any_error, timeout=10 * 60)
 
     logger.info("Redeploying %s", APP_NAME)
     juju.deploy(
@@ -72,6 +72,7 @@ def test_charm_redeploy(juju: jubilant.Juju, charm: pathlib.Path):
         lambda status: jubilant.all_blocked(status, APP_NAME)
         and f"{APP_NAME}/0" in status.apps[APP_NAME].units
         and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
         timeout=10 * 60,
     )
 

@@ -37,6 +37,9 @@ exclude:
 - .*_cache
 
 x-machine-suite: &machine-suite
+  # Suite keys below (e.g. `.../ubuntu-20.04/`) are labels only; test discovery
+  # uses this shared path, so every per-base suite intentionally runs the full
+  # integration set with a different CHARM_BASE build.
   discover-path: livepatch-machine-operator/tests/integration/
   working-dir: livepatch-machine-operator/
   summary: livepatch-machine-operator integration tests
@@ -46,9 +49,9 @@ x-machine-suite: &machine-suite
   auto-discover: true
   pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
   pytest-environment-template: |
-    {% for build in artifacts.charms[1].builds if build.arch == arch and build.base == env.get("CHARM_BASE", "") %}
+    {% for charm in artifacts.charms if charm.name == "canonical-livepatch-server" %}{% for build in charm.builds if build.arch == arch and build.base == env.get("CHARM_BASE", "") %}
     CHARM_PATH={{ build.path }}
-    {% endfor %}
+    {% endfor %}{% endfor %}
     CHARM_BASE={{ env.get("CHARM_BASE", "") }}
 
 integration-suites:

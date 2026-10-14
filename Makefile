@@ -67,6 +67,8 @@ opcli-test-machine: opcli-build
 	$(MAKE) opcli-run-machine-suites
 
 # One suite per base: CHARM_BASE selects the matching build, as in spread.yaml.
+# The suite keys are labels (discovery uses the shared discover-path), so each
+# base suite runs the full integration set against its own build.
 opcli-run-machine-suites:
 	for base in $(MACHINE_BASES); do \
 		CHARM_BASE=ubuntu@$$base opcli pytest run --suite $(MACHINE)/tests/integration/ubuntu-$$base/ || exit 1; \
