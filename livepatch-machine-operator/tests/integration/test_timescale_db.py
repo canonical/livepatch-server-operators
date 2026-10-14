@@ -20,6 +20,7 @@ from integration.helpers import (
 logger = logging.getLogger(__name__)
 
 POSTGRESQL_METRICS_APP = "postgresql-metrics"
+POSTGRESQL_METRICS_CHARM = "postgresql"
 POSTGRESQL_METRICS_ENDPOINT = "database"
 # The TimescaleDB extension is only available on PostgreSQL 16, which the
 # `postgresql` charm publishes on a 24.04 base.
@@ -36,11 +37,11 @@ def test_metrics_db_relation(juju: jubilant.Juju, charm: pathlib.Path):
     deploy_core(juju, charm)
 
     juju.deploy(
-        POSTGRESQL_METRICS_APP,
+        POSTGRESQL_METRICS_CHARM,
+        app=POSTGRESQL_METRICS_APP,
         channel=POSTGRESQL_METRICS_CHANNEL,
         base=POSTGRESQL_METRICS_BASE,
         num_units=1,
-        config={"plugin-timescaledb-enable": True},
     )
     # Machine provisioning is slow when many suites share the LXD host.
     juju.wait(

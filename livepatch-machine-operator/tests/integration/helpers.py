@@ -97,12 +97,24 @@ def get_snap_config(juju: jubilant.Juju, app: str = APP_NAME, unit: int | None =
 
 
 def website_relation_port(juju: jubilant.Juju, app: str = APP_NAME, unit: int | None = None) -> Optional[str]:
-    """Return the port a unit publishes on its `website` relation, if any."""
-    unit_name = _unit_name(juju.status(), app, unit)
-    info = juju.show_unit(unit_name)
-    for relation in info.relation_info:
-        if relation.endpoint == WEBSITE_RELATION and relation.local_unit:
-            return relation.local_unit.data.get("port")
+    """Return the port a unit publishes on its `website` relation, if any.
+
+    `website` is not a peer relation, so Juju does not expose the providing unit's
+    own databag (`local-unit` is empty). Read it instead from the consuming HAProxy
+    unit, where the provider's data appears under `related-units` (and any
+    application data under `application-data`).
+    """
+    status = juju.status()
+    provider_unit = _unit_name(status, app, unit)
+    haproxy_unit = _unit_name(status, HAPROXY_NAME, None)
+    for relation in juju.show_unit(haproxy_unit).relation_info:
+        if relation.related_endpoint != WEBSITE_RELATION:
+            continue
+        related = relation.related_units.get(provider_unit)
+        if related and related.data.get("port"):
+            return related.data["port"]
+        if relation.app_data.get("port"):
+            return relation.app_data["port"]
     return None
 
 

@@ -9,6 +9,8 @@ charm's entries that the k8s map never covered (influxdb_*, event_bus_*) are
 folded in so neither charm regresses.
 """
 
+from __future__ import annotations
+
 from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
