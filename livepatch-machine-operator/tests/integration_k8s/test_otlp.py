@@ -21,6 +21,7 @@ from integration.helpers import (
     SEND_OTLP_RELATION,
     deploy_core,
     get_snap_config,
+    wait_for_app_removed,
     wait_until,
 )
 
@@ -146,3 +147,7 @@ def test_cleanup(k8s_juju: jubilant.Juju):
     """Remove the OpenTelemetry Collector application."""
     if OTEL_COLLECTOR_APP in k8s_juju.status().apps:
         k8s_juju.remove_application(OTEL_COLLECTOR_APP)
+        # Removing the K8s model while this application is still terminating
+        # fails with "model not empty" and retries until the kill-timeout, so
+        # wait for the removal to finish before the module teardown destroys it.
+        wait_for_app_removed(k8s_juju, OTEL_COLLECTOR_APP)

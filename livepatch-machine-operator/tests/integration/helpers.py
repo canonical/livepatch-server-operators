@@ -268,6 +268,11 @@ def wait_until(condition, *, timeout: float = 300.0, delay: float = 5.0, descrip
     raise TimeoutError(f"Timed out waiting for {description}") from last_error
 
 
+def wait_for_app_removed(juju: jubilant.Juju, app: str, timeout: float = 600.0) -> None:
+    """Wait until an application no longer appears in the model status."""
+    juju.wait(lambda status: app not in status.apps, timeout=timeout)
+
+
 def integrate_postgres(juju: jubilant.Juju) -> None:
     """Integrate the Livepatch charm with the `postgresql` charm's `database` relation."""
     LOGGER.info("Integrating %s and %s", APP_NAME, POSTGRES_NAME)

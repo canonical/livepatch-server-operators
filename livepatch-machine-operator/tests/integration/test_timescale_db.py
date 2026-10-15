@@ -15,6 +15,7 @@ from integration.helpers import (
     METRICS_DB_RELATION,
     deploy_core,
     get_snap_config,
+    wait_until,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,10 +65,14 @@ def test_metrics_db_relation(juju: jubilant.Juju, charm: pathlib.Path):
 
 def test_timescale_connection_string_is_published(juju: jubilant.Juju):
     """The metrics-db relation populates the timescale connection string snap option."""
-    config = get_snap_config(juju)
+    # The charm is already active before the relation is created, so the setup
+    # test's `all_active` wait returns before the metrics-db hook has run.
+    connection_string = wait_until(
+        lambda: get_snap_config(juju).get(KEY_TIMESCALE_DB_CONNECTION_STRING),
+        timeout=10 * 60,
+        description="the timescale connection string to be published",
+    )
 
-    connection_string = config.get(KEY_TIMESCALE_DB_CONNECTION_STRING, "")
-    assert connection_string, "timescale connection string should be set once the metrics-db relation exists"
     assert connection_string.endswith(f"/{METRICS_DB_NAME}"), connection_string
 
 
@@ -82,16 +87,16 @@ def test_timescale_config_options_are_applied(juju: jubilant.Juju):
         },
     )
 
-    juju.wait(
-        lambda status: jubilant.all_active(status, APP_NAME),
-        error=jubilant.any_error,
+    expected = {
+        "lp.timescale-db.connection-pool-max": "25",
+        "lp.timescale-db.connection-lifetime-max": "20m",
+        "lp.timescale-db.work-mem": "64",
+    }
+    wait_until(
+        lambda: all(get_snap_config(juju).get(key) == value for key, value in expected.items()),
         timeout=5 * 60,
+        description="the timescale config options to be applied",
     )
-
-    config = get_snap_config(juju)
-    assert config.get("lp.timescale-db.connection-pool-max") == "25"
-    assert config.get("lp.timescale-db.connection-lifetime-max") == "20m"
-    assert config.get("lp.timescale-db.work-mem") == "64"
 
 
 def test_timescale_connection_string_cleared_on_relation_removed(juju: jubilant.Juju):
@@ -101,13 +106,8 @@ def test_timescale_connection_string_cleared_on_relation_removed(juju: jubilant.
         f"{POSTGRESQL_METRICS_APP}:{POSTGRESQL_METRICS_ENDPOINT}",
     )
 
-    juju.wait(
-        lambda status: jubilant.all_active(status, APP_NAME),
-        error=jubilant.any_error,
+    wait_until(
+        lambda: not get_snap_config(juju).get(KEY_TIMESCALE_DB_CONNECTION_STRING),
         timeout=10 * 60,
-    )
-
-    config = get_snap_config(juju)
-    assert not config.get(KEY_TIMESCALE_DB_CONNECTION_STRING), (
-        "timescale connection string should be cleared after removing the relation"
+        description="the timescale connection string to be cleared",
     )

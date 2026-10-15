@@ -43,7 +43,7 @@ exclude:
 - .*_cache
 
 x-machine-suite: &machine-suite
-  # Suite keys below (e.g. `.../ubuntu-20.04/`) are labels only; test discovery
+  # Suite keys below (e.g. `.../ubuntu-22.04/`) are labels only; test discovery
   # uses this shared path, so every per-base suite intentionally runs the full
   # integration set with a different CHARM_BASE build.
   discover-path: livepatch-machine-operator/tests/integration/
@@ -123,10 +123,6 @@ integration-suites:
   # unit of that base. All of them run on the same 24.04 host (the host OS is
   # irrelevant to the unit base), so there is one suite per base; CHARM_BASE
   # selects the matching build in the template below.
-  livepatch-machine-operator/tests/integration/ubuntu-20.04/:
-    <<: *machine-suite
-    environment:
-      CHARM_BASE: ubuntu@20.04
   livepatch-machine-operator/tests/integration/ubuntu-22.04/:
     <<: *machine-suite
     environment:
@@ -139,10 +135,6 @@ integration-suites:
     <<: *machine-suite
     environment:
       CHARM_BASE: ubuntu@26.04
-  livepatch-machine-operator/tests/integration_k8s/ubuntu-20.04/:
-    <<: *machine-k8s-suite
-    environment:
-      CHARM_BASE: ubuntu@20.04
   livepatch-machine-operator/tests/integration_k8s/ubuntu-22.04/:
     <<: *machine-k8s-suite
     environment:

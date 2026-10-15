@@ -10,7 +10,7 @@ website: https://ubuntu.com/security/livepatch
 issues: https://bugs.launchpad.net/livepatch-onprem
 docs: https://discourse.ubuntu.com/t/ubuntu-livepatch-service/22723
 tags: [security]
-series: focal
+series: jammy
 applications:
   # For longer running tests that do not care of relation state, we do not
   # want to spin up postgres again...

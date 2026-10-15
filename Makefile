@@ -5,7 +5,7 @@
 SHARED := $(CURDIR)/shared
 K8S := livepatch-k8s-operator
 MACHINE := livepatch-machine-operator
-MACHINE_BASES := 20.04 22.04 24.04 26.04
+MACHINE_BASES := 22.04 24.04 26.04
 
 .PHONY: sync pack unit-test unit-test-shared unit-test-k8s unit-test-machine \
 	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-run-machine-suites opcli-spread
