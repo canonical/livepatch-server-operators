@@ -1,0 +1,66 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+# Promotes one charm's revision (and its resource revisions) from one Charmhub
+# channel to another. The environment named after the destination channel gates
+# the run, required reviewers are configured there.
+
+name: Promote charm
+
+on:
+  workflow_dispatch:
+    inputs:
+      charm:
+        description: "Charm to promote"
+        type: choice
+        options:
+          - livepatch-k8s-operator
+          - livepatch-machine-operator
+      origin-channel:
+        description: "Origin channel"
+        type: choice
+        options:
+          - latest/edge
+          - latest/beta
+          - latest/candidate
+      destination-channel:
+        description: "Destination channel"
+        type: choice
+        options:
+          - latest/beta
+          - latest/candidate
+          - latest/stable
+      base-channel:
+        description: "Base channel to promote"
+        type: choice
+        options:
+          - "22.04"
+          - "24.04"
+          - "26.04"
+
+run-name: Promote ${{ inputs.charm }} ${{ inputs.base-channel }} from ${{ inputs.origin-channel }} to ${{ inputs.destination-channel }}
+
+jobs:
+  get-approval:
+    name: Get approval
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.destination-channel }}
+    steps:
+      - name: Approved
+        run: echo "Promotion to ${{ inputs.destination-channel }} approved"
+
+  promote:
+    name: Promote ${{ inputs.charm }} (${{ inputs.base-channel }})
+    needs: get-approval
+    permissions:
+      contents: read
+    # operator-workflows main as of 2026-08-28
+    uses: canonical/operator-workflows/.github/workflows/promote_charm.yaml@2c0cb8195be606e174c7c8aaaa974fbddd0d5c00
+    with:
+      charm-directory: ${{ inputs.charm }}
+      origin-channel: ${{ inputs.origin-channel }}
+      destination-channel: ${{ inputs.destination-channel }}
+      base-name: ubuntu
+      base-channel: ${{ inputs.base-channel }}
+      base-architecture: amd64
+    secrets: inherit
