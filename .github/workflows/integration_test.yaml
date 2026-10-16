@@ -10,6 +10,9 @@
 # prepare) and the build-failure check below match on them.
 # Switch back to the reusable workflow once charm-ci supports a charm
 # pre-build hook.
+#
+# publish.yaml resolves runs of this workflow by file name and fetches its
+# artifacts, so renaming either breaks publishing.
 
 name: Integration tests
 
