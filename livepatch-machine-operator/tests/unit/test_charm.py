@@ -129,6 +129,21 @@ class TestSnapConfig:
         ctx.run(ctx.on.config_changed(), state_in)
         assert any(delta.get("lp.patch-sync.sync-tiers") == "True" for delta in snap_set)
 
+    def test_swift_temp_url_key_secret_overrides_plaintext(self, ctx, snap_set, schema_check):
+        """A `patch-storage.swift-temp-url-key-secret` secret overrides the plaintext value."""
+        standard = _standard_db_relation()
+        secret = testing.Secret(tracked_content={"value": "secret-temp-url-key"})
+        state_in = _leader_state(
+            relations=[standard],
+            config={
+                "patch-storage.swift-temp-url-key": "plaintext-temp-url-key",
+                "patch-storage.swift-temp-url-key-secret": secret.id,
+            },
+            secrets={secret},
+        )
+        ctx.run(ctx.on.config_changed(), state_in)
+        assert any(delta.get("lp.patch-storage.swift-temp-url-key") == "secret-temp-url-key" for delta in snap_set)
+
 
 class TestLegacyDatabase:
     """Tests for the legacy database relation."""
