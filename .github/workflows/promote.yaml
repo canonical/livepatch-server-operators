@@ -30,19 +30,49 @@ on:
           - latest/beta
           - latest/candidate
           - latest/stable
-      base-channel:
-        description: "Base channel to promote"
-        type: choice
-        options:
-          - "22.04"
-          - "24.04"
-          - "26.04"
+      base-22-04:
+        description: "Promote the 22.04 base"
+        type: boolean
+        default: false
+      base-24-04:
+        description: "Promote the 24.04 base"
+        type: boolean
+        default: false
+      base-26-04:
+        description: "Promote the 26.04 base"
+        type: boolean
+        default: false
 
-run-name: Promote ${{ inputs.charm }} ${{ inputs.base-channel }} from ${{ inputs.origin-channel }} to ${{ inputs.destination-channel }}
+run-name: Promote ${{ inputs.charm }} from ${{ inputs.origin-channel }} to ${{ inputs.destination-channel }}
 
 jobs:
+  select-bases:
+    name: Select bases
+    runs-on: ubuntu-latest
+    outputs:
+      bases: ${{ steps.select.outputs.bases }}
+    steps:
+      - name: Build base list
+        id: select
+        env:
+          BASE_22_04: ${{ inputs.base-22-04 }}
+          BASE_24_04: ${{ inputs.base-24-04 }}
+          BASE_26_04: ${{ inputs.base-26-04 }}
+        run: |
+          set -euo pipefail
+          bases=()
+          [ "${BASE_22_04}" = "true" ] && bases+=("22.04")
+          [ "${BASE_24_04}" = "true" ] && bases+=("24.04")
+          [ "${BASE_26_04}" = "true" ] && bases+=("26.04")
+          if [ "${#bases[@]}" -eq 0 ]; then
+            echo "::error::Select at least one base to promote."
+            exit 1
+          fi
+          echo "bases=$(printf '%s\n' "${bases[@]}" | jq -R . | jq -cs .)" >> "${GITHUB_OUTPUT}"
+
   get-approval:
     name: Get approval
+    needs: select-bases
     runs-on: ubuntu-latest
     environment: ${{ inputs.destination-channel }}
     steps:
@@ -50,8 +80,12 @@ jobs:
         run: echo "Promotion to ${{ inputs.destination-channel }} approved"
 
   promote:
-    name: Promote ${{ inputs.charm }} (${{ inputs.base-channel }})
-    needs: get-approval
+    name: Promote ${{ inputs.charm }} (${{ matrix.base }})
+    needs: [select-bases, get-approval]
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ${{ fromJSON(needs.select-bases.outputs.bases) }}
     permissions:
       contents: read
     # operator-workflows main as of 2026-08-28
@@ -61,6 +95,6 @@ jobs:
       origin-channel: ${{ inputs.origin-channel }}
       destination-channel: ${{ inputs.destination-channel }}
       base-name: ubuntu
-      base-channel: ${{ inputs.base-channel }}
+      base-channel: ${{ matrix.base }}
       base-architecture: amd64
     secrets: inherit
