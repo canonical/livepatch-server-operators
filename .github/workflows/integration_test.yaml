@@ -20,7 +20,7 @@ env:
   # charm-ci v1.0.1
   OPCLI_GIT_REF: 58ae6614a3b143d4e57eff0fd1770e97d8c30fab
   BUILD_TIMEOUT_MINUTES: 60
-  SPREAD_JOBS_INCLUDE: "integration-test-ci:*"
+  SPREAD_JOBS_INCLUDE: "integration-test*-ci:*"
 
 jobs:
   build-matrix:
@@ -175,6 +175,7 @@ jobs:
       packages: read
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
@@ -243,7 +244,35 @@ jobs:
         env:
           CI: "true"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: opcli spread run -- -vv ${{ matrix.selector }}
+        run: |
+          # On a fresh runner concierge can race MicroK8s's own service-control
+          # snap change ("snap "microk8s" has "service-control" change in
+          # progress"). Retry only that known provisioning failure, never test
+          # failures.
+          set -o pipefail
+          log="$RUNNER_TEMP/spread.log"
+          max_attempts=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            if opcli spread run -- -vv ${{ matrix.selector }} 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt "$max_attempts" ] \
+              && grep -q 'snap "microk8s" has "service-control" change in progress' "$log"; then
+              echo "::warning::MicroK8s was still settling during provisioning; retrying (attempt $attempt of $max_attempts)."
+              # Wait for snapd to finish applying the pending MicroK8s change,
+              # otherwise concierge races the same "service-control" change again.
+              for _ in $(seq 1 60); do
+                sudo snap changes | grep -q Doing || break
+                sleep 5
+              done
+              # spread refuses to re-send project content to a non-empty remote
+              # project dir, and the CI backend has no discard step to clear the
+              # one left behind by the failed attempt.
+              sudo rm -rf /home/ubuntu/proj
+              continue
+            fi
+            exit 1
+          done
 
       - name: Juju status (on failure)
         if: failure()

@@ -87,7 +87,7 @@ copies can't go stale. You only need to run `make sync` by hand if you invoke
 artifacts are:
 
 - `livepatch-k8s-operator/canonical-livepatch-server-k8s_amd64.charm`
-- `livepatch-machine-operator/canonical-livepatch-server_ubuntu-22.04-amd64.charm`
+- `livepatch-machine-operator/canonical-livepatch-server_ubuntu@22.04-amd64.charm`
 
 ### Running tests
 
@@ -105,7 +105,6 @@ make unit-test-shared    # shared/tests against shared/livepatch_common
 make unit-test-k8s       # livepatch-k8s-operator
 make unit-test-machine   # livepatch-machine-operator
 ```
-
 ## License
 
 These charms are distributed under the Apache License, Version 2.0.

@@ -10,4 +10,6 @@ charms:
 - name: canonical-livepatch-server
   charmcraft-yaml: livepatch-machine-operator/charmcraft.yaml
   platforms:
+  # Packing every base in one job needs more disk than a GitHub-hosted runner has.
   - arch: amd64
+    runner: [self-hosted-linux-amd64-noble-medium]

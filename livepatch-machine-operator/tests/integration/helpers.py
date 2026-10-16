@@ -1,141 +1,297 @@
 # Copyright 2024 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Livepatch machine charm integration test helpers."""
+"""Shared constants and helper functions for the machine charm's integration tests."""
 
+from __future__ import annotations
+
+import json
 import logging
+import os
+import time
 from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import urljoin
 
+import jubilant
+import requests
 import yaml
-from integration.utils import fetch_charm
-from pytest_operator.plugin import OpsTest
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 METADATA = yaml.safe_load(Path("./charmcraft.yaml").read_text())
 APP_NAME = METADATA["name"]
+
+# postgresql and haproxy only publish a limited set of bases, so the rest of the
+# stack stays on one base while the charm under test runs on CHARM_BASE.
+STACK_BASE = "ubuntu@22.04"
+CHARM_BASE = os.environ.get("CHARM_BASE") or STACK_BASE
 POSTGRES_NAME = "postgresql"
 HAPROXY_NAME = "haproxy"
-NGINX_NAME = "nginx-ingress-integrator"
 PRO_AIRGAPPED_SERVER_NAME = "pro-airgapped-server"
 
+DATABASE_RELATION = "database"
+DATABASE_RELATION_LEGACY = "database-legacy"
+WEBSITE_RELATION = "website"
+PRO_AIRGAPPED_RELATION = "pro-airgapped-server"
+METRICS_DB_RELATION = "metrics-db"
+SEND_OTLP_RELATION = "send-otlp"
 
-async def scale(ops_test: OpsTest, application_name: str, count: int) -> None:
-    """Scale a given application to a specific unit count.
+SNAP_NAME = "canonical-livepatch-server"
 
-    Args:
-        ops_test: The ops test framework instance
-        application_name: The name of the application
-        count: The desired number of units to scale to
+# `server.url-template` only feeds patch download URLs back to clients, which
+# none of these tests fetch. A static placeholder keeps the database and OTLP
+# suites from having to depend on HAProxy just to reach active.
+FAKE_URL_TEMPLATE = "http://livepatch:8080/v1/patches/{filename}"
+
+AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
+
+PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
+    Path(__file__).parent / "data" / "pro-airgapped-manual-server-config.b64"
+).read_text().strip()
+
+
+def _unit_name(status: jubilant.Status, app: str, unit: int | None) -> str:
+    """Return `app/N`, defaulting to the app's lowest-numbered unit when `unit` is None.
+
+    Unit numbers keep increasing across a scale-down and a destroy/redeploy, so
+    callers must not assume the unit is `app/0`.
     """
-    async with ops_test.fast_forward():
-        change = count - len(ops_test.model.applications[application_name].units)
-        if change > 0:
-            await ops_test.model.applications[application_name].add_units(change)
-        elif change < 0:
-            units = [unit.name for unit in ops_test.model.applications[application_name].units[0:-change]]
-            await ops_test.model.applications[application_name].destroy_units(*units)
-        else:
-            return
-
-        await ops_test.model.wait_for_idle(
-            apps=[application_name],
-            status="active",
-            timeout=5000,
-            wait_for_exact_units=count,
-            idle_period=30,
-            raise_on_error=False,
-            raise_on_blocked=False,
-        )
-
-    assert len(ops_test.model.applications[application_name].units) == count
+    if unit is None:
+        units = status.apps[app].units
+        return sorted(units, key=lambda name: int(name.rsplit("/", 1)[1]))[0]
+    return f"{app}/{unit}"
 
 
-async def get_unit_url(ops_test: OpsTest, application, unit, port, protocol="http"):
-    """Returns unit URL from the model.
+def unit_address(status: jubilant.Status, app: str, unit: int | None = None) -> str:
+    """Return the address of a machine unit.
 
-    Args:
-        ops_test: PyTest object.
-        application: Name of the application.
-        unit: Number of the unit.
-        port: Port number of the URL.
-        protocol: Transfer protocol (default: http).
-
-    Returns:
-        Unit URL of the form {protocol}://{address}:{port}
+    Machine units report `public-address`; `address` is only populated for Kubernetes units.
     """
-    # Sometimes get_unit_address returns a None, no clue why, so looping until it's not
-    url = await ops_test.model.applications[application].units[unit].get_public_address()
-    return f"{protocol}://{url}:{port}"
+    return status.apps[app].units[_unit_name(status, app, unit)].public_address
 
 
-async def get_unit_message(ops_test: OpsTest, application, unit) -> str:
-    """Returns unit URL from the model.
+def unit_workload_message(status: jubilant.Status, app: str, unit: int | None = None) -> str:
+    """Return the workload status message of a unit."""
+    return status.apps[app].units[_unit_name(status, app, unit)].workload_status.message
 
-    Args:
-        ops_test: PyTest object.
-        application: Name of the application.
-        unit: Number of the unit.
 
-    Returns:
-        The unit message
+def _flatten_snap_config(config: Any, prefix: str = "") -> dict[str, str]:
+    """Flatten the nested mapping returned by `snap get -d` into dotted keys."""
+    if not isinstance(config, dict):
+        return {prefix: "" if config is None else str(config)}
+    flattened: dict[str, str] = {}
+    for key, value in config.items():
+        flattened.update(_flatten_snap_config(value, f"{prefix}.{key}" if prefix else str(key)))
+    return flattened
+
+
+def get_snap_config(juju: jubilant.Juju, app: str = APP_NAME, unit: int | None = None) -> dict[str, str]:
+    """Return the charm-managed snap configuration as flat dotted keys."""
+    unit_name = _unit_name(juju.status(), app, unit)
+    task = juju.exec("snap", "get", SNAP_NAME, "-d", unit=unit_name)
+    output = task.stdout.strip()
+    if not output:
+        return {}
+    return _flatten_snap_config(json.loads(output))
+
+
+def website_relation_port(juju: jubilant.Juju, app: str = APP_NAME, unit: int | None = None) -> Optional[str]:
+    """Return the port a unit publishes on its `website` relation, if any.
+
+    `website` is not a peer relation, so Juju does not expose the providing unit's
+    own databag (`local-unit` is empty). Read it instead from the consuming HAProxy
+    unit, where the provider's data appears under `related-units` (and any
+    application data under `application-data`).
     """
-    return ops_test.model.applications[application].units[unit].workload_status_message
+    status = juju.status()
+    provider_unit = _unit_name(status, app, unit)
+    haproxy_unit = _unit_name(status, HAPROXY_NAME, None)
+    for relation in juju.show_unit(haproxy_unit).relation_info:
+        if relation.related_endpoint != WEBSITE_RELATION:
+            continue
+        related = relation.related_units.get(provider_unit)
+        if related and related.data.get("port"):
+            return related.data["port"]
+        if relation.app_data.get("port"):
+            return relation.app_data["port"]
+    return None
 
 
-async def simulate_charm_redeploy(ops_test: OpsTest):
-    """Simulates the Livepatch charm being re-deployed.
+def http_get_json(protocol: str, address: str, port: int, path: str = "") -> dict[str, Any]:
+    """Perform a GET request against a unit and parse the response body as JSON."""
+    url = urljoin(f"{protocol}://{address}:{port}", path)
+    LOGGER.info("GET %s", url)
+    response = requests.get(url, timeout=300, verify=False)  # nosec B501 - self-signed certs in test env
+    response.raise_for_status()
+    return json.loads(response.content.decode())
 
-    Args:
-        ops_test: PyTest object.
+
+def assert_livepatch_healthy(status: jubilant.Status, app: str = APP_NAME, unit: int | None = None) -> dict[str, Any]:
+    """Assert that a Livepatch unit's `debug/status` endpoint responds successfully."""
+    address = unit_address(status, app, unit)
+    return http_get_json("http", address, 8080, "debug/status")
+
+
+def assert_haproxy_healthy(status: jubilant.Status, app: str = HAPROXY_NAME, unit: int = 0) -> dict[str, Any]:
+    """Assert that a Livepatch response is reachable through an HAProxy unit."""
+    address = unit_address(status, app, unit)
+    return http_get_json("http", address, 80, "debug/status")
+
+
+def deploy_core(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
+    """Deploy the charm and its database, reaching active without HAProxy.
+
+    Suites exercising a relation other than `website` use this so they do not
+    pay for an HAProxy machine. The url-template guard is satisfied up front
+    with a placeholder, leaving only the database relation to satisfy.
     """
-    async with ops_test.fast_forward():
-        await ops_test.model.applications[APP_NAME].destroy(force=True)
-        await ops_test.model.block_until(lambda: APP_NAME not in ops_test.model.applications)
+    LOGGER.info("Deploying %s and %s", APP_NAME, POSTGRES_NAME)
+    juju.deploy(
+        charm,
+        app=APP_NAME,
+        num_units=1,
+        base=CHARM_BASE,
+        config={
+            "patch-storage.type": "postgres",
+            "server.url-template": FAKE_URL_TEMPLATE,
+        },
+    )
+    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=STACK_BASE)
 
-    charm = await fetch_charm(ops_test)
+    LOGGER.info("Waiting for postgresql")
+    juju.wait(
+        lambda status: jubilant.all_active(status, POSTGRES_NAME),
+        error=jubilant.any_error,
+        timeout=30 * 60,
+    )
 
-    async with ops_test.fast_forward():
-        await ops_test.model.deploy(
-            charm,
-            application_name=APP_NAME,
-            num_units=1,
-            config={
-                "patch-storage.type": "postgres",
-                "server.url-template": "http://livepatch:8080/v1/patches/{filename}",
-            },
-        )
+    LOGGER.info("Waiting for the charm to block on the missing database relation")
+    juju.wait(
+        lambda status: jubilant.all_blocked(status, APP_NAME)
+        and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
+        timeout=10 * 60,
+    )
 
-        await ops_test.model.wait_for_idle(apps=[APP_NAME], status="blocked", raise_on_blocked=False, timeout=600)
-        await perform_livepatch_integrations(ops_test)
-        await ops_test.model.wait_for_idle(apps=[APP_NAME], status="active", raise_on_blocked=False, timeout=600)
+    integrate_postgres(juju)
 
-
-async def perform_livepatch_integrations(ops_test: OpsTest):
-    """Add relations between Livepatch charm, postgresql, Ubuntu-advantage, and HAProxy.
-
-    Args:
-        ops_test: PyTest object.
-    """
-    logger.info("Integrating Livepatch and Postgresql")
-    await ops_test.model.integrate(f"{APP_NAME}:database", f"{POSTGRES_NAME}:database")
-
-    def checker():
-        return (
-            "Waiting for postgres relation"
-            not in ops_test.model.applications[APP_NAME].units[0].workload_status_message
-        )
-
-    await ops_test.model.block_until(checker)
-    logger.info("Integrating Livepatch and haproxy")
-    await ops_test.model.integrate(f"{APP_NAME}:website", HAPROXY_NAME)
+    LOGGER.info("Waiting for the charm to migrate the schema and become active")
+    return juju.wait(
+        lambda status: jubilant.all_active(status, APP_NAME),
+        error=jubilant.any_error,
+        timeout=15 * 60,
+    )
 
 
-async def restart_application(ops_test: OpsTest):
-    """Restart Livepatch application.
+def deploy_to_active(juju: jubilant.Juju, charm: Path) -> jubilant.Status:
+    """Deploy the full stack and walk the charm through its guard sequence to active."""
+    juju.deploy(
+        charm,
+        app=APP_NAME,
+        num_units=1,
+        base=CHARM_BASE,
+        config={"patch-storage.type": "postgres"},
+    )
+    juju.deploy(POSTGRES_NAME, channel="14/stable", num_units=1, base=STACK_BASE)
+    juju.deploy(HAPROXY_NAME, num_units=1, base=STACK_BASE)
 
-    Args:
-        ops_test: PyTest object.
-    """
-    action = await ops_test.model.applications[APP_NAME].units[0].run_action("restart")
-    await action.wait()
+    LOGGER.info("Waiting for postgresql and haproxy")
+    # Machine provisioning on a loaded LXD host is slow (CI shows ~14 minutes
+    # just to allocate machines when many suites run in parallel).
+    juju.wait(
+        lambda status: jubilant.all_active(status, POSTGRES_NAME, HAPROXY_NAME),
+        error=jubilant.any_error,
+        timeout=30 * 60,
+    )
+
+    LOGGER.info("Waiting for the charm to block on missing configuration")
+    status = juju.wait(
+        lambda status: jubilant.all_blocked(status, APP_NAME)
+        and "server.url-template" in unit_workload_message(status, APP_NAME),
+        error=jubilant.any_error,
+        timeout=10 * 60,
+    )
+
+    haproxy_address = unit_address(status, HAPROXY_NAME)
+    url_template = f"http://{haproxy_address}:80/v1/patches/{{filename}}"
+    LOGGER.info("Setting server.url-template to %s", url_template)
+    juju.config(APP_NAME, {"server.url-template": url_template})
+
+    LOGGER.info("Waiting for the charm to block on the missing database relation")
+    juju.wait(
+        lambda status: jubilant.all_blocked(status, APP_NAME)
+        and unit_workload_message(status, APP_NAME) == AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
+        timeout=5 * 60,
+    )
+
+    integrate_postgres(juju)
+    integrate_haproxy(juju)
+
+    LOGGER.info("Waiting for the charm to migrate the schema and become active")
+    return juju.wait(jubilant.all_active, error=jubilant.any_error, timeout=10 * 60)
+
+
+def scale(juju: jubilant.Juju, app: str, count: int) -> jubilant.Status:
+    """Scale an application to a specific unit count, and wait for it to settle."""
+    status = juju.status()
+    current = len(status.apps[app].units)
+    if count > current:
+        juju.add_unit(app, num_units=count - current)
+    elif count < current:
+        units = sorted(status.apps[app].units, key=lambda name: int(name.rsplit("/", 1)[1]))[count:]
+        juju.remove_unit(*units)
+    else:
+        return status
+
+    return juju.wait(
+        lambda status: len(status.apps[app].units) == count and jubilant.all_active(status, app),
+        error=jubilant.any_error,
+        timeout=20 * 60,
+    )
+
+
+def wait_until(condition, *, timeout: float = 300.0, delay: float = 5.0, description: str = "condition"):
+    """Poll an arbitrary callable until it returns truthy, raising on timeout."""
+    deadline = time.monotonic() + timeout
+    last_error: Optional[BaseException] = None
+    while time.monotonic() < deadline:
+        try:
+            result = condition()
+        except Exception as exc:  # noqa: BLE001 - retried until the deadline, then re-raised via TimeoutError
+            last_error = exc
+            result = None
+        if result:
+            return result
+        time.sleep(delay)
+    raise TimeoutError(f"Timed out waiting for {description}") from last_error
+
+
+def wait_for_app_removed(juju: jubilant.Juju, app: str, timeout: float = 600.0) -> None:
+    """Wait until an application no longer appears in the model status."""
+    juju.wait(lambda status: app not in status.apps, timeout=timeout)
+
+
+def integrate_postgres(juju: jubilant.Juju) -> None:
+    """Integrate the Livepatch charm with the `postgresql` charm's `database` relation."""
+    LOGGER.info("Integrating %s and %s", APP_NAME, POSTGRES_NAME)
+    juju.integrate(f"{APP_NAME}:{DATABASE_RELATION}", f"{POSTGRES_NAME}:{DATABASE_RELATION}")
+    juju.wait(
+        lambda status: unit_workload_message(status, APP_NAME) != AWAIT_POSTGRES_RELATION,
+        error=jubilant.any_error,
+        timeout=15 * 60,
+    )
+
+
+def integrate_haproxy(juju: jubilant.Juju) -> None:
+    """Integrate the Livepatch charm with the `haproxy` charm's `website` relation."""
+    LOGGER.info("Integrating %s and %s", APP_NAME, HAPROXY_NAME)
+    juju.integrate(f"{APP_NAME}:{WEBSITE_RELATION}", HAPROXY_NAME)
+
+
+def run_schema_upgrade(juju: jubilant.Juju, unit: str = f"{APP_NAME}/0") -> jubilant.Task:
+    """Run the `schema-upgrade` action and wait for the charm to settle."""
+    task = juju.run(unit, "schema-upgrade")
+    juju.wait(lambda status: jubilant.all_active(status, APP_NAME), error=jubilant.any_error, timeout=10 * 60)
+    return task

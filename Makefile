@@ -5,11 +5,13 @@
 SHARED := $(CURDIR)/shared
 K8S := livepatch-k8s-operator
 MACHINE := livepatch-machine-operator
+MACHINE_BASES := 22.04 24.04 26.04
 
 .PHONY: sync pack unit-test unit-test-shared unit-test-k8s unit-test-machine \
-	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-spread
+	opcli-build opcli-test opcli-test-k8s opcli-test-machine opcli-run-machine-suites opcli-spread
 
 CONCIERGE := concierge-juju3.yaml
+CONCIERGE_MACHINE := concierge-machine-juju3.yaml
 
 sync:
 	@test -n "$$(ls -A $(SHARED)/livepatch_common)" || (echo "error: empty $(SHARED)/livepatch_common" && exit 1)
@@ -23,7 +25,7 @@ sync:
 
 pack: sync
 	cd $(K8S) && CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true charmcraft pack
-	cd $(MACHINE) && charmcraft pack
+	cd $(MACHINE) && CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true charmcraft pack
 
 # Unit tests. Each per-charm target re-runs sync so the staged copies of
 # shared/livepatch_common are current in the charm tree it tests.
@@ -53,7 +55,7 @@ opcli-test: opcli-build
 	opcli env provision -c $(CONCIERGE)
 	opcli artifacts push-images --missing-registry deploy
 	opcli pytest run --suite $(K8S)/tests/integration/
-	opcli pytest run --suite $(MACHINE)/tests/integration/
+	$(MAKE) opcli-run-machine-suites
 
 opcli-test-k8s: opcli-build
 	opcli env provision -c $(CONCIERGE)
@@ -61,5 +63,13 @@ opcli-test-k8s: opcli-build
 	opcli pytest run --suite $(K8S)/tests/integration/
 
 opcli-test-machine: opcli-build
-	opcli env provision -c $(CONCIERGE)
-	opcli pytest run --suite $(MACHINE)/tests/integration/
+	opcli env provision -c $(CONCIERGE_MACHINE)
+	$(MAKE) opcli-run-machine-suites
+
+# One suite per base: CHARM_BASE selects the matching build, as in spread.yaml.
+# The suite keys are labels (discovery uses the shared discover-path), so each
+# base suite runs the full integration set against its own build.
+opcli-run-machine-suites:
+	for base in $(MACHINE_BASES); do \
+		CHARM_BASE=ubuntu@$$base opcli pytest run --suite $(MACHINE)/tests/integration/ubuntu-$$base/ || exit 1; \
+	done

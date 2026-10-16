@@ -10,15 +10,25 @@ backends:
     type: integration-test
     systems:
     # The `-large` systems carry the disk-hungry tests (postgresql-k8s blocks on
-    # "<10% free space on pgdata volume" on the default GitHub-hosted runner)
-    # and run on the team's self-hosted medium flavour.
+    # "<10% free space on pgdata volume" on the default GitHub-hosted runner).
+    # They stay on the team's self-hosted medium flavour: on xlarge MicroK8s
+    # reports ready in ~30s, and concierge's `microk8s stop` for the image
+    # registry then races snapd's still-pending service-control change. The
+    # slower medium hosts take ~4.5min to become ready, which hides the race.
     - ubuntu-24.04-large:
         runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-26.04-large:
         runner: self-hosted-linux-amd64-noble-medium
-    - ubuntu-20.04
-    - ubuntu-18.04
-    - ubuntu-16.04
+  integration-test-machine:
+    type: integration-test
+    systems:
+    # The runner label is looked up by system name across all backends, so this
+    # must not reuse the k8s backend's `ubuntu-24.04-large` name: that would make
+    # the machine suites inherit the k8s runner.
+    - ubuntu-24.04-machine:
+        runner: self-hosted-linux-amd64-noble-medium
+    environment:
+      CONCIERGE: concierge-machine-juju3.yaml
 environment:
   CONCIERGE: '$(HOST: echo "${CONCIERGE:-concierge-juju3.yaml}")'
   OPCLI_GIT_REF: '$(HOST: echo "${OPCLI_GIT_REF:-main}")'
@@ -32,7 +42,45 @@ exclude:
 - .venv
 - .*_cache
 
-# TODO: rework the machine suite once it is switched to jubilant
+x-machine-suite: &machine-suite
+  # Suite keys below (e.g. `.../ubuntu-22.04/`) are labels only; test discovery
+  # uses this shared path, so every per-base suite intentionally runs the full
+  # integration set with a different CHARM_BASE build.
+  discover-path: livepatch-machine-operator/tests/integration/
+  working-dir: livepatch-machine-operator/
+  summary: livepatch-machine-operator integration tests
+  systems: [ubuntu-24.04-machine]
+  backends:
+  - integration-test-machine
+  auto-discover: true
+  pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+  pytest-environment-template: |
+    {% for charm in artifacts.charms if charm.name == "canonical-livepatch-server" %}{% for build in charm.builds if build.arch == arch and build.base == env.get("CHARM_BASE", "") %}
+    CHARM_PATH={{ build.path }}
+    {% endfor %}{% endfor %}
+    CHARM_BASE={{ env.get("CHARM_BASE", "") }}
+
+x-machine-k8s-suite: &machine-k8s-suite
+  # Cross-model observability tests: the machine charm on LXD relates to an
+  # OpenTelemetry Collector deployed on K8s. They need LXD *and* MicroK8s, so
+  # they use the K8s backend (`concierge-juju3.yaml`) and the `-large` systems,
+  # and live in their own discover-path so the plain machine suites never pay
+  # for MicroK8s. As with the machine suites, every per-base suite runs the same
+  # set on a unit of that base, selected by CHARM_BASE.
+  discover-path: livepatch-machine-operator/tests/integration_k8s/
+  working-dir: livepatch-machine-operator/
+  summary: livepatch-machine-operator cross-model observability tests
+  systems: [ubuntu-24.04-large]
+  backends:
+  - integration-test
+  auto-discover: true
+  pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+  pytest-environment-template: |
+    {% for charm in artifacts.charms if charm.name == "canonical-livepatch-server" %}{% for build in charm.builds if build.arch == arch and build.base == env.get("CHARM_BASE", "") %}
+    CHARM_PATH={{ build.path }}
+    {% endfor %}{% endfor %}
+    CHARM_BASE={{ env.get("CHARM_BASE", "") }}
+
 integration-suites:
   # Every test deploys postgresql-k8s, which blocks on "<10% free space on
   # pgdata volume" on GitHub-hosted runners, so all run on the `-large` systems.
@@ -71,17 +119,31 @@ integration-suites:
       CHARM_PATH={{ build.path }}
       {% endfor %}
       LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
-  # TODO: the machine suite is temporarily disabled while the k8s cross-model
-  # tests are being stabilised; re-enable once it is switched to jubilant.
-  # livepatch-machine-operator/tests/integration/:
-  #   working-dir: livepatch-machine-operator/
-  #   summary: livepatch-machine-operator integration tests
-  #   systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
-  #   backends:
-  #   - integration-test
-  #   auto-discover: true
-  #   pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
-  #   pytest-environment-template: |
-  #     {% for build in artifacts.charms[1].builds if build.arch == arch %}
-  #     CHARM_PATH={{ build.path }}
-  #     {% endfor %}
+  # The machine charm is built once per base and each build is deployed on a
+  # unit of that base. All of them run on the same 24.04 host (the host OS is
+  # irrelevant to the unit base), so there is one suite per base; CHARM_BASE
+  # selects the matching build in the template below.
+  livepatch-machine-operator/tests/integration/ubuntu-22.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@22.04
+  livepatch-machine-operator/tests/integration/ubuntu-24.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@24.04
+  livepatch-machine-operator/tests/integration/ubuntu-26.04/:
+    <<: *machine-suite
+    environment:
+      CHARM_BASE: ubuntu@26.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-22.04/:
+    <<: *machine-k8s-suite
+    environment:
+      CHARM_BASE: ubuntu@22.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-24.04/:
+    <<: *machine-k8s-suite
+    environment:
+      CHARM_BASE: ubuntu@24.04
+  livepatch-machine-operator/tests/integration_k8s/ubuntu-26.04/:
+    <<: *machine-k8s-suite
+    environment:
+      CHARM_BASE: ubuntu@26.04
