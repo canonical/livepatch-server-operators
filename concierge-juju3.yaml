@@ -8,17 +8,27 @@ juju:
 providers:
   lxd:
     enable: true
-  k8s:
-    enable: true
     bootstrap: true
-    bootstrap-constraints:
-      root-disk: "2G"
-    features:
-      load-balancer:
-        l2-mode: "true"
-        cidrs: "10.43.45.0/28"
-      local-storage: {}
-      network: {}
+  microk8s:
+    enable: true
+    # Not bootstrapped: the single controller is on LXD (so the `localhost`
+    # credential is native), and MicroK8s is added to it as a secondary cloud by
+    # the test fixtures. Enabling the provider still installs MicroK8s, enables
+    # the addons, and writes a kubeconfig (whose API server is the routable node
+    # IP) that `juju add-k8s` consumes.
+    bootstrap: false
+    # Pin >=1.35: the `ingress` addon only ships Traefik + the Gateway API (used
+    # by the gateway-api-integrator test with gateway-class=traefik) from 1.35
+    # onwards. Without an explicit channel, concierge can fall back to
+    # 1.32-strict/stable (old NGINX, no Gateway API). Matches the standalone
+    # repo's ingress CI.
+    channel: 1.35-strict/stable
+    addons:
+      - hostpath-storage
+      - dns
+      - rbac
+      - ingress
+      - metallb
 
 host:
   snaps:

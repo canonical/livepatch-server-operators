@@ -38,7 +38,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Generate build matrix
         id: matrix
@@ -71,7 +74,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install LXD
         run: |
@@ -97,6 +103,9 @@ jobs:
         run: make sync
 
       - name: Build ${{ matrix.type }} ${{ matrix.name }}
+        env:
+          # ubuntu@26.04 is still experimental for the `charm` craft-parts plugin
+          CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS: "true"
         run: |
           opcli artifacts build \
             --${{ matrix.type }} ${{ matrix.name }} \
@@ -116,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-build-${{ matrix.type }}-${{ matrix.name }}-${{ matrix.arch }}
-          path: artifacts.build.yaml
+          path: build/artifacts.build.yaml
           if-no-files-found: error
 
   test-matrix:
@@ -134,7 +143,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install spread
         run: |
@@ -159,6 +171,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+      # Required to pull the private `app-image` OCI image from ghcr.io.
+      packages: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
@@ -179,7 +193,10 @@ jobs:
         run: sudo snap install astral-uv --classic
 
       - name: Install opcli
-        run: uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+        run: |
+          uv tool install "opcli[cli] @ git+https://github.com/canonical/charm-ci.git@${OPCLI_GIT_REF}"
+          # Self-hosted runners don't have ~/.local/bin on PATH by default.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install spread
         run: |
@@ -191,18 +208,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          conclusion=$(gh run view "${{ github.run_id }}" \
-            --repo "${{ github.repository }}" \
-            --json jobs \
-            --jq '
-              [.jobs[] | select(.name | test("(?:^|/ )Build (?:charm|rock|snap) .+ \\(")) | .conclusion] |
-              if any(. == "failure") then "failure"
-              elif any(. == "cancelled") then "cancelled"
-              else empty
-              end
-            ')
-          if [[ "$conclusion" =~ ^(failure|cancelled)$ ]]; then
-            echo "::error::Build failed — build job conclusion is '$conclusion'. Skipping test."
+          # Use the REST jobs endpoint rather than `gh run view --json jobs`:
+          # the latter's `jobs` field needs a newer gh than some (self-hosted)
+          # runners ship, whereas `gh api` is version-stable. Build jobs still in
+          # progress have a null conclusion and are ignored (match the previous
+          # fire-and-forget behaviour).
+          conclusions=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | test("(?:^|/ )Build (?:charm|rock|snap) .+ \\(")) | .conclusion')
+          if grep -qx "failure" <<<"$conclusions"; then
+            echo "::error::Build failed — a build job conclusion is 'failure'. Skipping test."
+            exit 1
+          fi
+          if grep -qx "cancelled" <<<"$conclusions"; then
+            echo "::error::Build cancelled — a build job conclusion is 'cancelled'. Skipping test."
             exit 1
           fi
 

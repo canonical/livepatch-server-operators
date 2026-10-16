@@ -22,7 +22,7 @@ sync:
 	@cp $(SHARED)/grafana_dashboards/*.json $(MACHINE)/src/grafana_dashboards/
 
 pack: sync
-	cd $(K8S) && charmcraft pack
+	cd $(K8S) && CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true charmcraft pack
 	cd $(MACHINE) && charmcraft pack
 
 # Unit tests. Each per-charm target re-runs sync so the staged copies of

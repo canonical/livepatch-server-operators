@@ -9,43 +9,79 @@ backends:
   integration-test:
     type: integration-test
     systems:
-    - ubuntu-26.04
-    - ubuntu-24.04
+    # The `-large` systems carry the disk-hungry tests (postgresql-k8s blocks on
+    # "<10% free space on pgdata volume" on the default GitHub-hosted runner)
+    # and run on the team's self-hosted medium flavour.
+    - ubuntu-24.04-large:
+        runner: self-hosted-linux-amd64-noble-medium
+    - ubuntu-26.04-large:
+        runner: self-hosted-linux-amd64-noble-medium
     - ubuntu-20.04
     - ubuntu-18.04
     - ubuntu-16.04
 environment:
   CONCIERGE: '$(HOST: echo "${CONCIERGE:-concierge-juju3.yaml}")'
   OPCLI_GIT_REF: '$(HOST: echo "${OPCLI_GIT_REF:-main}")'
+  # Credentials for the private `app-image` OCI image. Empty outside CI, in
+  # which case the image is pulled anonymously.
+  REGISTRY_USERNAME: '$(HOST: echo "${GITHUB_ACTOR:-}")'
+  REGISTRY_PASSWORD: '$(HOST: echo "${GITHUB_TOKEN:-}")'
 exclude:
 - .git
 - .tox
 - .venv
 - .*_cache
 
-# TODO: rework this once we switch to jubilant 
+# TODO: rework the machine suite once it is switched to jubilant
 integration-suites:
+  # Every test deploys postgresql-k8s, which blocks on "<10% free space on
+  # pgdata volume" on GitHub-hosted runners, so all run on the `-large` systems.
   livepatch-k8s-operator/tests/integration/:
-    working-dir: livepatch-k8s-operator/
     summary: livepatch-k8s-operator integration tests
-    systems: [ubuntu-24.04, ubuntu-26.04]
+    systems: [ubuntu-24.04-large, ubuntu-26.04-large]
+    auto-discover: true
+    working-dir: livepatch-k8s-operator/
     backends:
     - integration-test
-    auto-discover: true
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
+    # `app-image` is a private GHCR image, so write a credentials file that the
+    # tests hand to Juju, which turns it into a Kubernetes image pull secret.
+    # Keeping the password in a file keeps it off the pytest command line.
+    prepare: |
+      if [ -n "${REGISTRY_PASSWORD}" ]; then
+        touch /home/ubuntu/.app-image-auth.yaml
+        chmod 0600 /home/ubuntu/.app-image-auth.yaml
+        chown ubuntu:ubuntu /home/ubuntu/.app-image-auth.yaml
+        cat > /home/ubuntu/.app-image-auth.yaml <<EOF
+      username: ${REGISTRY_USERNAME}
+      password: ${REGISTRY_PASSWORD}
+      EOF
+      fi
+    restore: |
+      rm -f /home/ubuntu/.app-image-auth.yaml
+    # pytest-jubilant tears the per-module models down by default; pass
+    # `--no-juju-teardown`/`--juju-model` locally to keep them. The single
+    # controller is bootstrapped on LXD and the fixtures pick the cloud per
+    # model, so no `--juju-controller` is set.
+    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --juju-dump-logs'
+    # SPREAD_SYSTEM (e.g. ubuntu-26.04-large) is only visible here, not to
+    # pytest, so the build matching the system's base is picked in this template.
     pytest-environment-template: |
-      {% for build in artifacts.charms[0].builds if build.arch == arch %}
+      {% set system_base = env.get("SPREAD_SYSTEM", "").replace("-large", "") %}
+      {% for build in artifacts.charms[0].builds if build.arch == arch and (build.base or "").replace("@", "-") == system_base %}
       CHARM_PATH={{ build.path }}
       {% endfor %}
-  livepatch-machine-operator/tests/integration/:
-    working-dir: livepatch-machine-operator/
-    summary: livepatch-machine-operator integration tests
-    systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
-    backends:
-    - integration-test
-    auto-discover: true
-    pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
-    pytest-environment-template: |
-      {% for build in artifacts.charms[1].builds if build.arch == arch %}
-      CHARM_PATH={{ build.path }}
-      {% endfor %}
+      LIVEPATCH_APP_IMAGE_AUTH=/home/ubuntu/.app-image-auth.yaml
+  # TODO: the machine suite is temporarily disabled while the k8s cross-model
+  # tests are being stabilised; re-enable once it is switched to jubilant.
+  # livepatch-machine-operator/tests/integration/:
+  #   working-dir: livepatch-machine-operator/
+  #   summary: livepatch-machine-operator integration tests
+  #   systems: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04, ubuntu-24.04, ubuntu-26.04] # large system coverage to ensure backwards compatibility with the old machine charm.
+  #   backends:
+  #   - integration-test
+  #   auto-discover: true
+  #   pytest-arguments-template: '-x --log-format="%(asctime)s %(levelname)s %(message)s" --keep-models --model testing'
+  #   pytest-environment-template: |
+  #     {% for build in artifacts.charms[1].builds if build.arch == arch %}
+  #     CHARM_PATH={{ build.path }}
+  #     {% endfor %}

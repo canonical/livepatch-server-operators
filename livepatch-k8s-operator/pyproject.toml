@@ -1,3 +1,19 @@
+[project]
+name = "canonical-livepatch-server-k8s"
+version = "0.0.0"
+description = "Canonical Livepatch Server Kubernetes charm"
+requires-python = ">=3.12"
+# Keep in sync with requirements.txt (used by tox); charmcraft's uv plugin reads this.
+dependencies = [
+    "cosl",
+    "ops==3.8.2",
+    "ops-lib-pgsql",
+    "paas-charm>=1.0,<2",
+    "requests",
+    "responses",
+    "validators",
+]
+
 [tool.black]
 line-length = 120 # override black's default line-length
 exclude = '''

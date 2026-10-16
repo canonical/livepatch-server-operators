@@ -28,9 +28,47 @@ tox -e fmt                    # update your code according to linting rules
 tox -e lint                   # code style
 tox -e unit                   # unit tests
 tox -e integration            # integration tests
-tox -e integration-airpagged  # integration tests for air-gapped deployments
 tox                           # runs 'lint' and 'unit' environments
 ```
+
+### Integration tests
+
+The integration tests use [Jubilant](https://documentation.ubuntu.com/jubilant/) and
+[pytest-jubilant](https://github.com/canonical/pytest-jubilant). They need a Juju 3.x
+controller, and they don't pack the charm, so pack it first:
+
+```shell
+make sync
+cd livepatch-k8s-operator
+charmcraft pack
+tox -e integration
+```
+
+A single test module can be selected with posargs, which is also how
+`opcli pytest run` drives this environment:
+
+```shell
+tox -e integration -- tests/integration/test_ingress.py
+tox -e integration -- tests/integration/test_timescale_db.py
+tox -e integration -- tests/integration/test_airgapped.py
+```
+
+Environment variables:
+
+- `LIVEPATCH_APP_IMAGE` (optional): OCI image used for the charm's `app-image` resource. Juju requires this
+  resource on every local charm deploy to a k8s model, so the tests always pass it; it defaults to the
+  `upstream-source` declared for that resource in `charmcraft.yaml`. When the reference carries a `vX.Y.Z`
+  tag, that tag is also the expected charm version.
+- `CHARM_PATH` (optional): path to the packed charm. Defaults to the single `*.charm` file in the charm root.
+- `JUJU_K8S_CLOUD` / `JUJU_LXD_CLOUD` (optional, cross-model tests): cloud names, default `microk8s` / `localhost`.
+- `JUJU_K8S_WORKLOAD_STORAGE` (optional): K8s storage class set on the K8s model when the controller runs on LXD,
+  default `microk8s-hostpath`.
+
+Useful pytest-jubilant options (pass them after `--`, e.g. `tox -e integration -- --no-juju-teardown`):
+
+- `--no-juju-teardown`: keep the models (and skip `juju_teardown` tests) for inspection.
+- `--juju-model <prefix>`: use a fixed model-name prefix instead of a random one.
+- `--no-juju-setup`: skip `juju_setup` tests and reuse existing models (requires `--juju-model`).
 
 
 ## Build charm

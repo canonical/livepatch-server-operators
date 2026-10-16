@@ -1,0 +1,79 @@
+# Workshop definition for the livepatch-server-operators repo.
+# Docs: https://ubuntu.com/workshop/docs/
+#
+# Launch:   workshop launch
+# Shell:    workshop shell
+# Actions:  workshop run -- <action> [args...]
+name: livepatch-server-operators-sandbox
+base: ubuntu@24.04
+sdks:
+  # GitHub Copilot CLI (`copilot`). Auth is handled by the set-github-token /
+  # copilot-login actions below.
+  - name: copilot
+    channel: latest/stable
+  # SSH server for VS Code's "Remote - SSH" extension. Workshop manages the
+  # SSH certificates itself; just add the SDK and `workshop info` for the
+  # hostname to connect to (see the how-to below).
+  - name: vscode-remote
+    channel: latest/stable
+
+actions:
+  # --- General-purpose tooling installers, runnable after launch. ---------
+  install-apt: |
+    sudo apt update
+    sudo apt install -y "$@"
+  install-snap: |
+    sudo snap install "$@"
+
+  # --- GitHub PAT setup for Copilot CLI ------------------------------------
+  # Usage: workshop run -- set-github-token        (paste the token when prompted)
+  #    or: printf '%s' "<YOUR_GITHUB_PAT>" | workshop run -- set-github-token
+  #
+  # The token is read from stdin (never passed as a command-line argument) so it
+  # does not leak into shell history or process listings. Copilot CLI reads
+  # COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN (in that order), so we
+  # persist the token to a private file under the workshop user's own home
+  # directory and export it from .bashrc. This never touches /project (the repo
+  # mount), so it can't collide with, or leak into, the repository itself.
+  set-github-token: |
+    # Read the PAT from stdin so it never appears in argv / shell history.
+    if [ -t 0 ]; then
+      printf 'Paste your GitHub PAT (input hidden): ' >&2
+      stty -echo 2>/dev/null || true
+      IFS= read -r token
+      stty echo 2>/dev/null || true
+      printf '\n' >&2
+    else
+      IFS= read -r token
+    fi
+    token="${token:?No token provided on stdin}"
+    umask 077
+    mkdir -p "$HOME/.config/workshop"
+    printf '%s' "$token" > "$HOME/.config/workshop/github-token"
+    chmod 600 "$HOME/.config/workshop/github-token"
+
+    profile="$HOME/.bashrc"
+    marker="# >>> github token (managed by set-github-token action) >>>"
+    if ! grep -qF "$marker" "$profile" 2>/dev/null; then
+      cat >>"$profile" <<EOF
+
+    $marker
+    if [ -r "\$HOME/.config/workshop/github-token" ]; then
+      export GH_TOKEN="\$(cat "\$HOME/.config/workshop/github-token")"
+      export GITHUB_TOKEN="\$GH_TOKEN"
+      export COPILOT_GITHUB_TOKEN="\$GH_TOKEN"
+    fi
+    # <<< github token <<<
+    EOF
+    fi
+    echo "Token stored for the workshop user. Run 'workshop shell' again (or 'exec \$SHELL -l') to pick it up."
+
+  # Usage: workshop run -- clear-github-token
+  clear-github-token: |
+    rm -f "$HOME/.config/workshop/github-token"
+    echo "GitHub token removed."
+
+  # Alternative to a PAT: interactive device-code login, first time only.
+  # Usage: workshop run -- copilot-login
+  copilot-login: |
+    copilot /login

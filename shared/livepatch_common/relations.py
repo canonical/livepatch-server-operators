@@ -9,8 +9,9 @@ the k8s charm (which reads ``ops`` relations directly) and the machine charm
 unit/app databag they have already gathered.
 """
 
+import json
 import logging
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 from urllib.parse import ParseResult, urlunparse
 
 logger = logging.getLogger(__name__)
@@ -87,8 +88,36 @@ def cve_source_url(data: Mapping[str, Any]) -> Optional[str]:
     return url or None
 
 
+# Ranking used to pick between endpoints offering the same telemetry: newer
+# transports win (mirrors the otlp charm lib's "favor modern protocol").
+_OTLP_PROTOCOL_PRIORITY = {"grpc": 2, "http": 1}
+
+
+def _otlp_endpoint_from_list(endpoints: List[Any]) -> Optional[Tuple[str, str, bool]]:
+    """Pick the preferred metrics endpoint from the otlp ``endpoints`` list.
+
+    Each item is a mapping ``{protocol, endpoint, telemetries, insecure}``.
+    Only endpoints that accept ``metrics`` are considered, and when several
+    remain the newest transport (``grpc`` over ``http``) is preferred.
+    """
+    candidates = [
+        item
+        for item in endpoints
+        if isinstance(item, Mapping) and item.get("endpoint") and "metrics" in (item.get("telemetries") or [])
+    ]
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda item: _OTLP_PROTOCOL_PRIORITY.get(item.get("protocol"), 0))
+    return str(best["endpoint"]), str(best.get("protocol", "http")), bool(best.get("insecure", False))
+
+
 def otlp_metrics_endpoint(data: Mapping[str, Any]) -> Optional[Tuple[str, str, bool]]:
     """Read the OTLP metrics push endpoint from a send-otlp databag.
+
+    Supports the current ``otlp`` interface, where the provider publishes an
+    ``endpoints`` key holding a JSON list of ``{protocol, endpoint, telemetries,
+    insecure}`` objects, as well as the legacy flat ``endpoint``/``protocol``/
+    ``insecure`` keys for backwards compatibility.
 
     Args:
         data: the application/relation databag.
@@ -96,6 +125,21 @@ def otlp_metrics_endpoint(data: Mapping[str, Any]) -> Optional[Tuple[str, str, b
     Returns:
         A tuple of (endpoint, protocol, insecure), or None when unavailable.
     """
+    raw_endpoints = data.get("endpoints")
+    if raw_endpoints:
+        endpoints = raw_endpoints
+        if isinstance(endpoints, str):
+            try:
+                endpoints = json.loads(endpoints)
+            except ValueError:
+                logger.warning("ignoring malformed 'endpoints' in send-otlp databag")
+                endpoints = []
+        if isinstance(endpoints, list):
+            resolved = _otlp_endpoint_from_list(endpoints)
+            if resolved is not None:
+                return resolved
+
+    # Legacy flat schema.
     endpoint = data.get("endpoint")
     if not endpoint:
         return None
