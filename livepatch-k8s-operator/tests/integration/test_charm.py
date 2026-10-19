@@ -43,8 +43,4 @@ def test_charm_version_is_set(juju: jubilant.Juju):
 
     app = juju.status().apps[APP_NAME]
     assert app.charm_version == expected_version, f"expected {expected_version}, got {app.charm_version}"
-    assert app.units, f"no units found for {APP_NAME}"
-    for name, unit in app.units.items():
-        assert unit.workload_version == expected_version, (
-            f"{name}: expected workload version {expected_version}, got {unit.workload_version}"
-        )
+    assert app.version == expected_version, f"expected {expected_version}, got {app.version}"
