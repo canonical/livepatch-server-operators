@@ -28,6 +28,7 @@ parts:
     override-build: |-
       rustup default stable
       craftctl default
+      cp --archive --recursive cos_custom "${CRAFT_PART_INSTALL}/"
 type: charm
 charm-libs:
 - lib: traefik-k8s.ingress
