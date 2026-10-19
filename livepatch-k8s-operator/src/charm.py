@@ -18,6 +18,7 @@ here directly.
 """
 
 import logging
+import pathlib
 import typing
 from urllib.parse import urlparse
 
@@ -344,6 +345,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         self._configured_ingress: typing.Optional[str] = None
         self._nginx_route_requirer: typing.Optional[object] = None
         self._update_ingress_method()
+        self._update_workload_version()
         self.framework.observe(self.on.config_changed, self._on_config_changed_ingress)
 
         # Legacy (pgsql interface) database support, re-added for backward
@@ -433,6 +435,15 @@ class LivepatchCharm(paas_charm.go.Charm):
     def _on_config_changed_ingress(self, _: ops.ConfigChangedEvent) -> None:
         """Re-evaluate the selected ingress method on config-changed."""
         self._update_ingress_method()
+
+    def _update_workload_version(self) -> None:
+        """Set the workload version (shown in `juju status`) from the charm's version file."""
+        version_file = pathlib.Path("version")
+        if not version_file.is_file():
+            return
+        version = version_file.read_text(encoding="utf-8").strip()
+        if version:
+            self.unit.set_workload_version(version)
 
     def _update_ingress_method(self) -> None:
         """Configure the legacy nginx-route ingress if selected via config.

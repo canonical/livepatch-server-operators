@@ -41,5 +41,6 @@ def test_charm_version_is_set(juju: jubilant.Juju):
     if expected_version is None:
         pytest.skip(f"app image {APP_IMAGE!r} carries no vX.Y.Z tag to compare against")
 
-    version = juju.status().apps[APP_NAME].charm_version
-    assert version == expected_version, f"expected {expected_version}, got {version}"
+    app = juju.status().apps[APP_NAME]
+    assert app.charm_version == expected_version, f"expected {expected_version}, got {app.charm_version}"
+    assert app.version == expected_version, f"expected {expected_version}, got {app.version}"
