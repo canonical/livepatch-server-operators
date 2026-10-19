@@ -32,6 +32,13 @@ def test_env_var_redaction_is_shared():
     assert SECRET not in _redact(f"LP_CONTRACTS_PASSWORD={SECRET} LP_OTHER_VAR=1")
 
 
+def test_swift_temp_url_key_env_var_is_redacted():
+    result = _redact(f"LP_PATCH_STORAGE_SWIFT_TEMP_URL_KEY={SECRET}")
+
+    assert SECRET not in result
+    assert f"LP_PATCH_STORAGE_SWIFT_TEMP_URL_KEY={_REDACTED}" == result
+
+
 def test_app_secret_key_env_var_is_redacted():
     result = _redact(f"LP_APP_SECRET_KEY={SECRET}")
 

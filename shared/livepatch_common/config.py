@@ -32,6 +32,7 @@ SECRET_VALUE_KEY = "value"  # nosec B105
 SECRET_FALLBACK_OPTIONS: Dict[str, str] = {
     "auth.basic.users": "auth.basic.users-secret",
     "patch-storage.swift-api-key": "patch-storage.swift-api-key-secret",
+    "patch-storage.swift-temp-url-key": "patch-storage.swift-temp-url-key-secret",
     "patch-storage.gcs-credentials-json": "patch-storage.gcs-credentials-json-secret",
     "patch-storage.ibm-api-key": "patch-storage.ibm-api-key-secret",
     "patch-sync.token": "patch-sync.token-secret",
