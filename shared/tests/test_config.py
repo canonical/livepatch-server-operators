@@ -31,6 +31,7 @@ def test_canonical_fallback_options_are_the_expected_set():
     assert SECRET_FALLBACK_OPTIONS == {
         "auth.basic.users": "auth.basic.users-secret",
         "patch-storage.swift-api-key": "patch-storage.swift-api-key-secret",
+        "patch-storage.swift-temp-url-key": "patch-storage.swift-temp-url-key-secret",
         "patch-storage.gcs-credentials-json": "patch-storage.gcs-credentials-json-secret",
         "patch-storage.ibm-api-key": "patch-storage.ibm-api-key-secret",
         "patch-sync.token": "patch-sync.token-secret",
@@ -66,6 +67,15 @@ def test_resolve_standalone_secret_overrides_plain_option():
         _provider({"patch-sync.token-secret": {SECRET_VALUE_KEY: "s3cr3t"}})
     )
     assert resolved == {"patch-sync.token": "s3cr3t"}
+
+
+def test_resolve_swift_temp_url_key_secret_overrides_plain_option():
+    resolved = resolve_secret_values(
+        _provider(
+            {"patch-storage.swift-temp-url-key-secret": {SECRET_VALUE_KEY: "temp-url-key"}}
+        )
+    )
+    assert resolved == {"patch-storage.swift-temp-url-key": "temp-url-key"}
 
 
 def test_resolve_standalone_secret_missing_value_key_raises():

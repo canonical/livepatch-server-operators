@@ -31,6 +31,7 @@ _SENSITIVE_SNAP_CONFIG_PATTERN = re.compile(
     r"|patch-sync\.token"
     r"|influx\.token"
     r"|patch-storage\.swift-api-key"
+    r"|patch-storage\.swift-temp-url-key"
     r"|patch-storage\.swift-username"
     r"|patch-storage\.s3-access-key"
     r"|patch-storage\.s3-secret-key"
