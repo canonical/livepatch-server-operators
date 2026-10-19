@@ -85,7 +85,7 @@
                         "uid": "${lokids}"
                     },
                     "editorMode": "code",
-                    "expr": "sum(count_over_time({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",juju_charm=~\".*livepatch.*\"}[$__range]))",
+                    "expr": "sum(count_over_time({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",charm=~\".*livepatch.*\"}[$__range]))",
                     "legendFormat": "",
                     "queryType": "instant",
                     "refId": "A"
@@ -149,7 +149,7 @@
                         "uid": "${lokids}"
                     },
                     "editorMode": "code",
-                    "expr": "sum(count_over_time({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",juju_charm=~\".*livepatch.*\"} |~ \"(?i)\\\\berror\\\\b\"[$__range]))",
+                    "expr": "sum(count_over_time({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",charm=~\".*livepatch.*\"} |~ \"(?i)\\\\berror\\\\b\"[$__range]))",
                     "legendFormat": "",
                     "queryType": "instant",
                     "refId": "A"
@@ -213,7 +213,7 @@
                         "uid": "${lokids}"
                     },
                     "editorMode": "code",
-                    "expr": "sum(count_over_time({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",juju_charm=~\".*livepatch.*\"} |~ \"(?i)\\\\bwarn(ing)?\\\\b\"[$__range]))",
+                    "expr": "sum(count_over_time({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",charm=~\".*livepatch.*\"} |~ \"(?i)\\\\bwarn(ing)?\\\\b\"[$__range]))",
                     "legendFormat": "",
                     "queryType": "instant",
                     "refId": "A"
@@ -338,7 +338,7 @@
                         "uid": "${lokids}"
                     },
                     "editorMode": "code",
-                    "expr": "sum by (level) (rate({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",juju_charm=~\".*livepatch.*\"} | json | level=~\"$level\" [$__interval]))",
+                    "expr": "sum by (level) (rate({juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",charm=~\".*livepatch.*\"} | json | level=~\"$level\" [$__interval]))",
                     "legendFormat": "{{level}}",
                     "queryType": "range",
                     "refId": "A"
@@ -389,7 +389,7 @@
                         "uid": "${lokids}"
                     },
                     "editorMode": "code",
-                    "expr": "{juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",juju_charm=~\".*livepatch.*\"} |~ \"(?i)(\\\"?level\\\"?[=:\\\"]{1,3}(error|warn(?:ing)?|fatal|panic|critical)|(WARNING|ERROR|FATAL|PANIC|CRITICAL):)\" | json",
+                    "expr": "{juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",charm=~\".*livepatch.*\"} |~ \"(?i)(\\\"?level\\\"?[=:\\\"]{1,3}(error|warn(?:ing)?|fatal|panic|critical)|(WARNING|ERROR|FATAL|PANIC|CRITICAL):)\" | json",
                     "legendFormat": "",
                     "queryType": "range",
                     "refId": "A"
@@ -427,7 +427,7 @@
                         "uid": "${lokids}"
                     },
                     "editorMode": "code",
-                    "expr": "{juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",juju_charm=~\".*livepatch.*\"} | json | level=~\"$level\"",
+                    "expr": "{juju_model=~\"$juju_model\",juju_application=~\"$juju_application\",juju_unit=~\"$juju_unit\",charm=~\".*livepatch.*\"} | json | level=~\"$level\"",
                     "legendFormat": "",
                     "queryType": "range",
                     "refId": "A"
@@ -447,7 +447,7 @@
     "templating": {
         "list": [
             {
-                "includeAll": true,
+                "includeAll": false,
                 "label": "Loki datasource",
                 "multi": true,
                 "name": "lokids",
@@ -463,7 +463,7 @@
                     "type": "loki",
                     "uid": "${lokids}"
                 },
-                "definition": "label_values(juju_model)",
+                "definition": "label_values({charm=~\".*livepatch.*\"}, juju_model)",
                 "includeAll": true,
                 "label": "Juju model",
                 "multi": true,
@@ -472,11 +472,11 @@
                 "query": {
                     "label": "juju_model",
                     "refId": "StandardVariableQuery",
-                    "stream": "",
+                    "stream": "{charm=~\".*livepatch.*\"}",
                     "type": 2
                 },
                 "refresh": 2,
-                "regex": ".*livepatch.*",
+                "regex": ".*",
                 "type": "query"
             },
             {
@@ -485,7 +485,7 @@
                     "type": "loki",
                     "uid": "${lokids}"
                 },
-                "definition": "label_values(juju_application)",
+                "definition": "label_values({charm=~\".*livepatch.*\", juju_model=~\"$juju_model\"}, juju_application)",
                 "includeAll": true,
                 "label": "Juju application",
                 "multi": true,
@@ -494,11 +494,11 @@
                 "query": {
                     "label": "juju_application",
                     "refId": "StandardVariableQuery",
-                    "stream": "",
+                    "stream": "{charm=~\".*livepatch.*\", juju_model=~\"$juju_model\"}",
                     "type": 2
                 },
                 "refresh": 2,
-                "regex": ".*livepatch.*",
+                "regex": ".*",
                 "type": "query"
             },
             {
@@ -507,7 +507,7 @@
                     "type": "loki",
                     "uid": "${lokids}"
                 },
-                "definition": "label_values(juju_unit)",
+                "definition": "label_values({charm=~\".*livepatch.*\", juju_model=~\"$juju_model\", juju_application=~\"$juju_application\"}, juju_unit)",
                 "includeAll": true,
                 "label": "Juju unit",
                 "multi": true,
@@ -516,11 +516,11 @@
                 "query": {
                     "label": "juju_unit",
                     "refId": "StandardVariableQuery",
-                    "stream": "",
+                    "stream": "{charm=~\".*livepatch.*\", juju_model=~\"$juju_model\", juju_application=~\"$juju_application\"}",
                     "type": 2
                 },
                 "refresh": 2,
-                "regex": ".*livepatch.*",
+                "regex": ".*",
                 "type": "query"
             },
             {
