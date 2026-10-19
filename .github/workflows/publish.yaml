@@ -86,4 +86,4 @@ jobs:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           channel: "${{ inputs.track }}/edge"
           charm-path: livepatch-k8s-operator
-          built-charm-path: "livepatch-k8s-operator/canonical-livepatch-server-k8s_ubuntu@24.04-amd64.charm,livepatch-k8s-operator/canonical-livepatch-server-k8s_ubuntu@26.04-amd64.charm"
+          built-charm-path: "canonical-livepatch-server-k8s_ubuntu@24.04-amd64.charm,canonical-livepatch-server-k8s_ubuntu@26.04-amd64.charm"
