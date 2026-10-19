@@ -27,7 +27,7 @@ env:
 jobs:
   upload-livepatch-server-k8s:
     name: Build and upload k8s charm
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted-linux-amd64-noble-medium
     timeout-minutes: 60
     permissions:
       contents: write
