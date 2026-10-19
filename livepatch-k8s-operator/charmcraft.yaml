@@ -30,7 +30,7 @@ parts:
       craftctl default
       # Store the workload image version in the version file so Juju reports
       # it as the charm version and the charm can set it as the workload version.
-      grep -m1 '^ *upstream-source:' charmcraft.yaml | grep -oE 'v[0-9]+(\.[0-9]+)*' | head -n1 > "$CRAFT_PART_INSTALL/version" || true
+      grep -m1 '^ *upstream-source:' "$CRAFT_PROJECT_DIR/charmcraft.yaml" | grep -oE 'v[0-9]+(\.[0-9]+)*' | head -n1 > "$CRAFT_PART_INSTALL/version" || true
 type: charm
 charm-libs:
 - lib: traefik-k8s.ingress
