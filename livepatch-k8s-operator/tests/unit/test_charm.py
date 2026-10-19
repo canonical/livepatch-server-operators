@@ -60,6 +60,27 @@ def test_missing_postgresql_relation_blocks_without_crashing(context, base_state
     assert "postgresql" in state_out.unit_status.message
 
 
+def test_swift_temp_url_key_secret_overrides_plaintext(context, base_state):
+    """arrange: both the plaintext swift-temp-url-key and its secret sibling are set.
+    act: config-changed.
+    assert: the secret's value wins in the LP_PATCH_STORAGE_SWIFT_TEMP_URL_KEY env var.
+    """
+    secret = testing.Secret(tracked_content={"value": "secret-temp-url-key"})
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        config={
+            "patch-storage.swift-temp-url-key": "plaintext-temp-url-key",
+            "patch-storage.swift-temp-url-key-secret": secret.id,
+        },
+        secrets={secret},
+    )
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_PATCH_STORAGE_SWIFT_TEMP_URL_KEY"] == "secret-temp-url-key"
+
+
 def test_patch_storage_postgres_falls_back_to_main_db(context, base_state):
     """arrange: patch-storage.type=postgres, no explicit postgres-connection-string.
     act: config-changed.
