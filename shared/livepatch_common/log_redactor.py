@@ -59,11 +59,9 @@ _KV_PATTERN = re.compile(
     r"(?:"
     # Backslash-escaped characters (including the quote itself) are consumed
     # as part of the value so an escaped quote cannot end the match early.
-    r"(?P<q>['\"])(?P<qv>(?:\\.|(?!(?P=q))[^\\])*)(?P=q)"
-    r"|"
+    r"(?P<q>['\"])(?P<qv>(?:\\.|(?!(?P=q))[^\\])*)(?P=q)" r"|"
     # An unterminated opening quote must not stop the unquoted value matching.
-    r"['\"]?(?P<uv>[^\s'\"]+)"
-    r")",
+    r"['\"]?(?P<uv>[^\s'\"]+)" r")",
     re.IGNORECASE,
 )
 
@@ -196,12 +194,12 @@ def _install_redacting_log_record_factory() -> None:
 
     def _factory(*args, **kwargs):
         record = _orig_log_record_factory(*args, **kwargs)
-        orig_getMessage = record.getMessage
+        orig_get_message = record.getMessage
 
-        def _redacted_getMessage():
-            return _redact(orig_getMessage())
+        def _redacted_get_message():
+            return _redact(orig_get_message())
 
-        record.getMessage = _redacted_getMessage  # type: ignore[method-assign]
+        record.getMessage = _redacted_get_message  # type: ignore[method-assign]
         if record.exc_info and record.exc_info[0] is not None and not record.exc_text:
             try:
                 record.exc_text = _redact(logging.Formatter().formatException(record.exc_info))

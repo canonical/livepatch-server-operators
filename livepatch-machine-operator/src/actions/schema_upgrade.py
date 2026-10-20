@@ -11,7 +11,12 @@ from ops.charm import ActionEvent
 from ops.model import MaintenanceStatus
 
 from constants.snap import SCHEMA_TARGET_TIMESCALE
-from util.schema_tool import SchemaToolError, check_schema_version, run_schema_upgrade, upgrade_required
+from util.schema_tool import (
+    SchemaToolError,
+    check_schema_version,
+    run_schema_upgrade,
+    upgrade_required,
+)
 
 if TYPE_CHECKING:
     from charm import OperatorMachineCharm
@@ -61,4 +66,3 @@ def on_schema_upgrade_action(self: OperatorMachineCharm, event: ActionEvent) -> 
 
     # Converges CA/config drift and restarts the daemon if anything changed.
     self._reconcile(None)
-

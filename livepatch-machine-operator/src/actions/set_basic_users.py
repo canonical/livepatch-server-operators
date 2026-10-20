@@ -11,7 +11,12 @@ import bcrypt
 import ops
 from ops.charm import ActionEvent
 
-from config import KEY_AUTH_BASIC_ENABLED, KEY_AUTH_BASIC_USERS, SECRET_FALLBACK_OPTIONS, SECRET_VALUE_KEY
+from config import (
+    KEY_AUTH_BASIC_ENABLED,
+    KEY_AUTH_BASIC_USERS,
+    SECRET_FALLBACK_OPTIONS,
+    SECRET_VALUE_KEY,
+)
 
 if TYPE_CHECKING:
     from charm import OperatorMachineCharm
@@ -156,8 +161,8 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
     if event.params.get("append") is True:
         if existing_secret_id:
             try:
-                existing_users = self.model.get_secret(id=existing_secret_id).get_content(refresh=True).get(
-                    SECRET_VALUE_KEY
+                existing_users = (
+                    self.model.get_secret(id=existing_secret_id).get_content(refresh=True).get(SECRET_VALUE_KEY)
                 )
             except ops.SecretNotFoundError:
                 event.fail(
@@ -167,8 +172,7 @@ def on_set_basic_users_action(self: OperatorMachineCharm, event: ActionEvent) ->
                 return
             if existing_users is None:
                 event.fail(
-                    "The secret configured for `auth.basic.users-secret` must have a "
-                    f"`{SECRET_VALUE_KEY}` key."
+                    "The secret configured for `auth.basic.users-secret` must have a " f"`{SECRET_VALUE_KEY}` key."
                 )
                 return
         else:

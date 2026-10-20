@@ -315,8 +315,11 @@ class OperatorMachineCharm(CharmBase):
     ###########
     # ACTIONS #
     ###########
-    from actions.migrate_config import on_migrate_ops_config_action, on_migrate_reactive_config_action
     from actions.enable import on_enable_action
+    from actions.migrate_config import (
+        on_migrate_ops_config_action,
+        on_migrate_reactive_config_action,
+    )
     from actions.restart import on_restart_action
     from actions.schema_upgrade import on_schema_upgrade_action
     from actions.set_basic_users import on_set_basic_users_action

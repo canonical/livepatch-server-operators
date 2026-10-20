@@ -4,7 +4,6 @@
 import json
 
 import pytest
-
 from livepatch_common.relations import (
     build_database_uri,
     cve_source_url,
@@ -55,7 +54,11 @@ def test_cve_source_url():
 
 
 def test_otlp_metrics_endpoint():
-    assert otlp_metrics_endpoint({"endpoint": "http://otel:4318"}) == ("http://otel:4318", "http", True)
+    assert otlp_metrics_endpoint({"endpoint": "http://otel:4318"}) == (
+        "http://otel:4318",
+        "http",
+        True,
+    )
     data = {"endpoint": "http://otel:4318", "protocol": "grpc", "insecure": "false"}
     assert otlp_metrics_endpoint(data) == ("http://otel:4318", "grpc", False)
     assert otlp_metrics_endpoint({}) is None
@@ -89,10 +92,40 @@ def test_otlp_metrics_endpoint_list_requires_metrics():
     # Endpoints that do not accept metrics are ignored (falls back to None).
     data = {
         "endpoints": json.dumps(
-            [{"protocol": "http", "endpoint": "http://otel:4318", "telemetries": ["logs"], "insecure": True}]
+            [
+                {
+                    "protocol": "http",
+                    "endpoint": "http://otel:4318",
+                    "telemetries": ["logs"],
+                    "insecure": True,
+                }
+            ]
         )
     }
     assert otlp_metrics_endpoint(data) is None
+
+
+def test_otlp_metrics_endpoint_list_requires_protocol():
+    # The otlp interface requires a protocol on every published endpoint; an
+    # entry without one is incomplete and must not be used.
+    data = {"endpoints": json.dumps([{"endpoint": "http://otel:4318", "telemetries": ["metrics"]}])}
+    assert otlp_metrics_endpoint(data) is None
+
+
+def test_otlp_metrics_endpoint_list_defaults_insecure():
+    # `insecure` is optional in the otlp interface and defaults to False.
+    data = {
+        "endpoints": json.dumps(
+            [
+                {
+                    "protocol": "grpc",
+                    "endpoint": "http://otel:4317",
+                    "telemetries": ["metrics"],
+                }
+            ]
+        )
+    }
+    assert otlp_metrics_endpoint(data) == ("http://otel:4317", "grpc", False)
 
 
 def test_otlp_metrics_endpoint_list_takes_precedence_over_flat():
@@ -100,7 +133,14 @@ def test_otlp_metrics_endpoint_list_takes_precedence_over_flat():
     data = {
         "endpoint": "http://legacy:4318",
         "endpoints": json.dumps(
-            [{"protocol": "http", "endpoint": "http://otel:4318", "telemetries": ["metrics"], "insecure": False}]
+            [
+                {
+                    "protocol": "http",
+                    "endpoint": "http://otel:4318",
+                    "telemetries": ["metrics"],
+                    "insecure": False,
+                }
+            ]
         ),
     }
     assert otlp_metrics_endpoint(data) == ("http://otel:4318", "http", False)

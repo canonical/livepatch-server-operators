@@ -3,6 +3,7 @@
 
 """Unit tests for the Livepatch machine charm using state-transition testing."""
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -465,6 +466,50 @@ class TestSendOTLPRelation:
         state_removed = _leader_state(relations=[standard, send_otlp_removed])
         ctx.run(ctx.on.relation_broken(send_otlp_removed), state_removed)
         assert any(delta.get("lp.otel-metrics.otlp-endpoint") == "" for delta in snap_set)
+
+    def test_otel_metrics_enabled_without_relation__maintenance(self, ctx, snap_set, schema_check):
+        """Test metrics exporting enabled without an endpoint holds the workload."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard], config={"otel-metrics.enabled": True})
+        state_out = ctx.run(ctx.on.config_changed(), state_in)
+        assert state_out.unit_status == testing.MaintenanceStatus("Waiting for complete OTLP metrics relation data.")
+        assert snap_set == []
+
+    def test_otel_metrics_enabled_with_incomplete_relation__maintenance(self, ctx, snap_set, schema_check):
+        """Test an incomplete send-otlp databag holds the workload."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp",
+            remote_app_name="opentelemetry-collector",
+            remote_app_data={
+                "endpoints": json.dumps([{"endpoint": "otel-collector:4318", "telemetries": ["metrics"]}])
+            },
+        )
+        state_in = _leader_state(relations=[standard, send_otlp], config={"otel-metrics.enabled": True})
+        state_out = ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert state_out.unit_status == testing.MaintenanceStatus("Waiting for complete OTLP metrics relation data.")
+        assert snap_set == []
+
+    def test_otel_metrics_enabled_with_complete_relation__active(self, ctx, snap_set, schema_check):
+        """Test a complete send-otlp databag lets the workload converge."""
+        standard = _standard_db_relation()
+        send_otlp = testing.Relation(
+            "send-otlp",
+            remote_app_name="opentelemetry-collector",
+            remote_app_data={"endpoint": "otel-collector:4318", "protocol": "http", "insecure": "true"},
+        )
+        state_in = _leader_state(relations=[standard, send_otlp], config={"otel-metrics.enabled": True})
+        state_out = ctx.run(ctx.on.relation_changed(send_otlp), state_in)
+        assert state_out.unit_status == testing.ActiveStatus(LIVEPATCH_RUNNING)
+        assert any(delta.get("lp.otel-metrics.otlp-endpoint") == "otel-collector:4318" for delta in snap_set)
+
+    def test_otel_metrics_disabled_without_relation__active(self, ctx, snap_set, schema_check):
+        """Test metrics exporting disabled keeps the workload converged without an endpoint."""
+        standard = _standard_db_relation()
+        state_in = _leader_state(relations=[standard])
+        state_out = ctx.run(ctx.on.config_changed(), state_in)
+        assert state_out.unit_status == testing.ActiveStatus(LIVEPATCH_RUNNING)
+        assert any(delta.get("lp.otel-metrics.enabled") == "False" for delta in snap_set)
 
 
 class TestLifecycle:

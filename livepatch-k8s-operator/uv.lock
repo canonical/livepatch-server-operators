@@ -26,6 +26,7 @@ version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "cosl" },
+    { name = "email-validator" },
     { name = "ops" },
     { name = "ops-lib-pgsql" },
     { name = "paas-charm" },
@@ -37,6 +38,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cosl" },
+    { name = "email-validator", specifier = ">=2" },
     { name = "ops", specifier = "==3.8.2" },
     { name = "ops-lib-pgsql" },
     { name = "paas-charm", specifier = ">=1.0,<2" },
@@ -212,6 +214,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dnspython"
+version = "2.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/4a/50822184bd67cc6493f0fb6a880749158fcd31ab3fa07409acfd91f9fc85/dnspython-2.9.0.tar.gz", hash = "sha256:b44dc6b18f07a8b1c56676a19fbfdb5209415b046a9cece286baafa87ff3f7f1", size = 423560, upload-time = "2026-10-09T00:07:24.352Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/02/cdcc9b7c051786a103c3b09e1003a82fa0c66bcb91ffbdabcfbf7b4163b9/dnspython-2.9.0-py3-none-any.whl", hash = "sha256:9a4aedb833c3c1b49214d04d44d3032ab7a9135f7c1d29a549b4ff78fd82fda9", size = 354822, upload-time = "2026-10-09T00:07:22.622Z" },
+]
+
+[[package]]
 name = "dpcharmlibs-interfaces"
 version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -222,6 +233,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/13/f2/e32d91b27744a22e3a155856a76e78a43408e635e3e43b091c167154371b/dpcharmlibs_interfaces-1.0.2.tar.gz", hash = "sha256:5cc88791d4844c1d485188e10c04fbc6651de16b841fe2fb09da5643bf3af981", size = 203946, upload-time = "2026-03-31T15:28:29.319Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1c/bb/3156ee9b052450cf26e9d5e9fe7ef3a3f7af1047026b06cfd2a21951a77b/dpcharmlibs_interfaces-1.0.2-py3-none-any.whl", hash = "sha256:1fa1005e55a0fa000bcf340831ab33ff7e7f6225678d6d07ca1383c36a658326", size = 37015, upload-time = "2026-03-31T15:28:27.676Z" },
+]
+
+[[package]]
+name = "email-validator"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dnspython" },
+    { name = "idna" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f5/22/900cb125c76b7aaa450ce02fd727f452243f2e91a61af068b40adba60ea9/email_validator-2.3.0.tar.gz", hash = "sha256:9fc05c37f2f6cf439ff414f8fc46d917929974a82244c20eb10231ba60c54426", size = 51238, upload-time = "2025-08-26T13:09:06.831Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl", hash = "sha256:80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4", size = 35604, upload-time = "2025-08-26T13:09:05.858Z" },
 ]
 
 [[package]]

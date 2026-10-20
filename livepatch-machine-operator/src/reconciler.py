@@ -32,7 +32,9 @@ from ops.model import (
 
 import relations
 from config import CharmConfig, InvalidCharmConfigError
+from constants.snap import SCHEMA_TARGET_TIMESCALE
 from constants.statuses import (
+    AWAIT_OTEL_METRICS_DATA,
     AWAIT_POSTGRES_PRIMARY,
     AWAIT_POSTGRES_RELATION,
     AWAIT_POSTGRES_URI,
@@ -44,7 +46,6 @@ from constants.statuses import (
     LIVEPATCH_RUNNING,
     SCHEMA_UPGRADE_FAILED,
 )
-from constants.snap import SCHEMA_TARGET_TIMESCALE
 from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME
 from relations import BothDatabaseRelationsError
 from util.schema_tool import SchemaToolError, run_schema_upgrade, upgrade_required
@@ -132,6 +133,11 @@ class MachineReconciler:
             logger.error("failed to update the trusted CA certificate: %s", e)
             self.status = MaintenanceStatus(LIVEPATCH_FAILED_TO_UPDATE_CA)
             return
+        otel_metrics_endpoint = relations.otel_metrics_endpoint(charm)
+        if config.otel_metrics_enabled and otel_metrics_endpoint is None:
+            logger.warning("waiting for a complete OTLP metrics endpoint before configuring the workload")
+            self.status = MaintenanceStatus(AWAIT_OTEL_METRICS_DATA)
+            return
         desired = config.to_snap_config(
             db_uri=db_uri,
             is_leader=charm.unit.is_leader(),
@@ -139,7 +145,7 @@ class MachineReconciler:
             pro_airgapped_url=relations.pro_airgapped_url(charm),
             timescale_db_uri=charm.metrics_db_uri,
             cve_catalog_url=relations.cve_catalog_url(charm),
-            otel_metrics_endpoint=relations.otel_metrics_endpoint(charm),
+            otel_metrics_endpoint=otel_metrics_endpoint,
         )
         try:
             config_changed = self._workload.apply_config(desired)

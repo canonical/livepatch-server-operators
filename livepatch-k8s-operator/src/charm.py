@@ -30,10 +30,10 @@ import paas_charm.databases
 import paas_charm.go
 import pgsql
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequiresEvent
-from paas_charm.exceptions import CharmConfigInvalidError
-from paas_charm.utils import config_get_with_secret
 from charms.nginx_ingress_integrator.v0.nginx_route import require_nginx_route
 from paas_charm.databases import PaaSDatabaseRequires
+from paas_charm.exceptions import CharmConfigInvalidError
+from paas_charm.utils import config_get_with_secret
 
 # paas_charm's make_database_requirers iterates through all relations in
 # metadata matching SUPPORTED_DB_INTERFACES and attempts to instantiate a
@@ -64,14 +64,10 @@ def _patched_make_database_requirers(
 paas_charm.databases.make_database_requirers = _patched_make_database_requirers
 paas_charm.charm.make_database_requirers = _patched_make_database_requirers
 
-from livepatch_common.config_migration import handle_migration_action
 from livepatch_common.config import SECRET_FALLBACK_OPTIONS, SECRET_GROUPS, SECRET_VALUE_KEY
+from livepatch_common.config_migration import handle_migration_action
 from livepatch_common.contracts import get_machine_token, get_proxy_dict, get_resource_token
-from livepatch_common.relations import (
-    cve_source_url,
-    otlp_metrics_endpoint,
-    pro_airgapped_server_address,
-)
+from livepatch_common.relations import cve_source_url, otlp_metrics_endpoint, pro_airgapped_server_address
 from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME, decode_contracts_ca
 from log_redactor import setup_log_redaction
 
@@ -85,6 +81,8 @@ SEND_OTLP_RELATION = "send-otlp"
 DATABASE_LEGACY_RELATION = "database-legacy"
 DATABASE_LEGACY_NAME = "livepatch-server"
 SCHEMA_TOOL_PATH = "/usr/local/bin/livepatch-schema-tool"
+OTEL_METRICS_ENABLED_OPTION = "otel-metrics.enabled"
+AWAIT_OTEL_METRICS_DATA = "Waiting for complete OTLP metrics relation data."
 
 # Juju secret label used to persist the ua-contracts resource token exchanged
 # via the get-resource-token action. A Juju app-owned secret is used instead
@@ -129,8 +127,7 @@ def _env_var_name(option: str) -> str:
 # `user_defined_config` key form, mapping to its secret sibling's key form and
 # the `LP_*` env var both ultimately feed.
 SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
-    _udc_key(plain): (_udc_key(secret), _env_var_name(plain))
-    for plain, secret in SECRET_FALLBACK_OPTIONS.items()
+    _udc_key(plain): (_udc_key(secret), _env_var_name(plain)) for plain, secret in SECRET_FALLBACK_OPTIONS.items()
 }
 
 # Config options that bundle several related, deprecated plain-text options
@@ -139,9 +136,7 @@ SECRET_FALLBACK_ENV_VARS: dict[str, tuple[str, str]] = {
 # secret's `user_defined_config` key form, mapping each expected secret content
 # key to the plain option's key form and the `LP_*` env var both ultimately feed.
 SECRET_GROUP_ENV_VARS: dict[str, dict[str, tuple[str, str]]] = {
-    _udc_key(group): {
-        content_key: (_udc_key(plain), _env_var_name(plain)) for content_key, plain in sub_keys.items()
-    }
+    _udc_key(group): {content_key: (_udc_key(plain), _env_var_name(plain)) for content_key, plain in sub_keys.items()}
     for group, sub_keys in SECRET_GROUPS.items()
 }
 
@@ -162,9 +157,7 @@ def _encode(value: object) -> str:
     return str(value)
 
 
-def _resolve_secret_config(
-    charm: ops.CharmBase, key: str, content_key: str = SECRET_VALUE_KEY
-) -> typing.Optional[str]:
+def _resolve_secret_config(charm: ops.CharmBase, key: str, content_key: str = SECRET_VALUE_KEY) -> typing.Optional[str]:
     """Resolve a `type: secret` config option to a given key in its content.
 
     Args:
@@ -263,8 +256,7 @@ class LivepatchApp(paas_charm.app.App):
                 group_env[env_name] = _encode(value)
 
         lp_env: dict[str, str] = {
-            "LP_" + k.replace("-", "_").replace(".", "_").upper(): _encode(v)
-            for k, v in user_defined_config.items()
+            "LP_" + k.replace("-", "_").replace(".", "_").upper(): _encode(v) for k, v in user_defined_config.items()
         }
         lp_env.update(group_env)
         lp_env["LP_SERVER_IS_LEADER"] = _encode(charm.unit.is_leader())
@@ -302,9 +294,7 @@ class LivepatchApp(paas_charm.app.App):
         if lp_env.get("LP_PATCH_STORAGE_TYPE") == "postgres" and not lp_env.get(
             "LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"
         ):
-            lp_env["LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"] = env.get(
-                "POSTGRESQL_DB_CONNECT_STRING", ""
-            )
+            lp_env["LP_PATCH_STORAGE_POSTGRES_CONNECTION_STRING"] = env.get("POSTGRESQL_DB_CONNECT_STRING", "")
 
         # Remap go-framework's generic OTLP tracing env vars (from the
         # `tracing` integration) to the server's expected LP_TRACING_* names.
@@ -352,32 +342,18 @@ class LivepatchCharm(paas_charm.go.Charm):
         # compatibility alongside the modern `postgresql` relation. Only one
         # of the two may be related at a time.
         self.legacy_db = pgsql.PostgreSQLClient(self, DATABASE_LEGACY_RELATION)
-        self.framework.observe(
-            self.legacy_db.on.database_relation_joined, self._on_legacy_db_relation_joined
-        )
+        self.framework.observe(self.legacy_db.on.database_relation_joined, self._on_legacy_db_relation_joined)
         self.framework.observe(self.legacy_db.on.master_changed, self._on_legacy_db_master_changed)
-        self.framework.observe(
-            self.legacy_db.on.standby_changed, self._on_legacy_db_standby_changed
-        )
-        self.framework.observe(
-            self.on[DATABASE_LEGACY_RELATION].relation_broken, self._on_legacy_db_relation_broken
-        )
+        self.framework.observe(self.legacy_db.on.standby_changed, self._on_legacy_db_standby_changed)
+        self.framework.observe(self.on[DATABASE_LEGACY_RELATION].relation_broken, self._on_legacy_db_relation_broken)
 
-        self._metrics_db = PaaSDatabaseRequires(
-            self, relation_name=METRICS_DB_RELATION, database_name=METRICS_DB_NAME
-        )
+        self._metrics_db = PaaSDatabaseRequires(self, relation_name=METRICS_DB_RELATION, database_name=METRICS_DB_NAME)
         self.framework.observe(self._metrics_db.on.database_created, self._on_metrics_db_changed)
         self.framework.observe(self._metrics_db.on.endpoints_changed, self._on_metrics_db_changed)
-        self.framework.observe(
-            self.on[METRICS_DB_RELATION].relation_broken, self._on_metrics_db_broken
-        )
+        self.framework.observe(self.on[METRICS_DB_RELATION].relation_broken, self._on_metrics_db_broken)
 
-        self.framework.observe(
-            self.on[PRO_AIRGAPPED_SERVER_RELATION].relation_changed, self._on_reconcile
-        )
-        self.framework.observe(
-            self.on[PRO_AIRGAPPED_SERVER_RELATION].relation_departed, self._on_reconcile
-        )
+        self.framework.observe(self.on[PRO_AIRGAPPED_SERVER_RELATION].relation_changed, self._on_reconcile)
+        self.framework.observe(self.on[PRO_AIRGAPPED_SERVER_RELATION].relation_departed, self._on_reconcile)
         self.framework.observe(self.on[CVE_CATALOG_RELATION].relation_changed, self._on_reconcile)
         self.framework.observe(self.on[CVE_CATALOG_RELATION].relation_broken, self._on_reconcile)
         self.framework.observe(self.on[SEND_OTLP_RELATION].relation_changed, self._on_reconcile)
@@ -402,6 +378,11 @@ class LivepatchCharm(paas_charm.go.Charm):
             except CharmConfigInvalidError as exc:
                 self.update_app_and_unit_status(ops.BlockedStatus(str(exc)))
                 return
+        if not self.is_ready():
+            return
+        if self.config.get(OTEL_METRICS_ENABLED_OPTION) and self.otel_metrics_endpoint() is None:
+            self.update_app_and_unit_status(ops.MaintenanceStatus(AWAIT_OTEL_METRICS_DATA))
+            return
         super().restart(rerun_migrations=rerun_migrations)
 
     def _create_app(self) -> paas_charm.app.App:
@@ -475,9 +456,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         if self.model.get_relation("postgresql"):
             # Raising here would crash the hook and leave the unit in error;
             # surface the conflict as a blocked status instead.
-            self.unit.status = ops.BlockedStatus(
-                "cannot relate to both `postgresql` and `database-legacy`; remove one"
-            )
+            self.unit.status = ops.BlockedStatus("cannot relate to both `postgresql` and `database-legacy`; remove one")
             return
         if self.unit.is_leader():
             event.database = DATABASE_LEGACY_NAME
@@ -693,16 +672,12 @@ class LivepatchCharm(paas_charm.go.Charm):
 
         proxies = get_proxy_dict(self.config)
         contracts_url = self.config.get("contracts.url", "")
-        machine_token = get_machine_token(
-            contract_token, contracts_url=contracts_url, proxies=proxies
-        )
+        machine_token = get_machine_token(contract_token, contracts_url=contracts_url, proxies=proxies)
         if not machine_token:
             event.fail("cannot fetch the resource token: failed to fetch the machine token")
             return
 
-        resource_token = get_resource_token(
-            machine_token, contracts_url=contracts_url, proxies=proxies
-        )
+        resource_token = get_resource_token(machine_token, contracts_url=contracts_url, proxies=proxies)
         if not resource_token:
             event.fail("cannot fetch the resource token: failed to fetch the resource token")
             return

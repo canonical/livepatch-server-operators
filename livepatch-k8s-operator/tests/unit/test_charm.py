@@ -455,6 +455,69 @@ def test_send_otlp_relation_sets_metrics_endpoint_list_schema(context, base_stat
     assert env["LP_OTEL_METRICS_INSECURE"] == "false"
 
 
+def test_otel_metrics_enabled_without_relation_enters_maintenance(context, base_state):
+    """arrange: leader unit with otel metrics enabled and no send-otlp relation.
+    act: config-changed.
+    assert: the charm holds in maintenance without applying the workload environment.
+    """
+    state_in = dataclasses.replace(testing.State(**base_state), config={"otel-metrics.enabled": True})
+
+    state_out = context.run(context.on.config_changed(), state_in)
+
+    assert state_out.unit_status == testing.MaintenanceStatus("Waiting for complete OTLP metrics relation data.")
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert "LP_OTEL_METRICS_ENABLED" not in env
+    assert "LP_OTEL_METRICS_OTLP_ENDPOINT" not in env
+
+
+def test_otel_metrics_enabled_with_incomplete_relation_enters_maintenance(context, base_state):
+    """arrange: otel metrics enabled with a send-otlp databag missing the protocol.
+    act: send-otlp relation-changed.
+    assert: the charm holds in maintenance without applying the workload environment.
+    """
+    relation = testing.Relation(
+        endpoint="send-otlp",
+        interface="otlp",
+        remote_app_data={"endpoints": json.dumps([{"endpoint": "otel-collector:4318", "telemetries": ["metrics"]}])},
+    )
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        relations=set(base_state["relations"]) | {relation},
+        config={"otel-metrics.enabled": True},
+    )
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    assert state_out.unit_status == testing.MaintenanceStatus("Waiting for complete OTLP metrics relation data.")
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert "LP_OTEL_METRICS_ENABLED" not in env
+    assert "LP_OTEL_METRICS_OTLP_ENDPOINT" not in env
+
+
+def test_otel_metrics_enabled_with_complete_relation_reaches_active(context, base_state):
+    """arrange: otel metrics enabled with a complete send-otlp databag.
+    act: send-otlp relation-changed.
+    assert: the charm reaches active and exports metrics with the relation endpoint.
+    """
+    relation = testing.Relation(
+        endpoint="send-otlp",
+        interface="otlp",
+        remote_app_data={"endpoint": "otel-collector:4318", "protocol": "http", "insecure": "true"},
+    )
+    state_in = dataclasses.replace(
+        testing.State(**base_state),
+        relations=set(base_state["relations"]) | {relation},
+        config={"otel-metrics.enabled": True},
+    )
+
+    state_out = context.run(context.on.relation_changed(relation), state_in)
+
+    assert state_out.unit_status == testing.ActiveStatus()
+    env = state_out.get_container(APP_CONTAINER).plan.services[SERVICE_NAME].environment
+    assert env["LP_OTEL_METRICS_ENABLED"] == "true"
+    assert env["LP_OTEL_METRICS_OTLP_ENDPOINT"] == "otel-collector:4318"
+
+
 # ---------------------------------------------------------------------------
 # Ingress method switching
 # ---------------------------------------------------------------------------
@@ -600,9 +663,7 @@ def test_schema_upgrade_action_includes_metrics_target_when_related(context, bas
         schema_tool_container,
         execs={
             testing.Exec([SCHEMA_TOOL_PATH, "upgrade", "--db", MAIN_DSN, "--target", "livepatchdb"], return_code=0),
-            testing.Exec(
-                [SCHEMA_TOOL_PATH, "upgrade", "--db", METRICS_DSN, "--target", "timescaledb"], return_code=0
-            ),
+            testing.Exec([SCHEMA_TOOL_PATH, "upgrade", "--db", METRICS_DSN, "--target", "timescaledb"], return_code=0),
         },
     )
     state_in = dataclasses.replace(

@@ -5,7 +5,6 @@ import io
 import logging
 
 import pytest
-
 from livepatch_common.log_redactor import _REDACTED, _redact, setup_log_redaction
 
 SECRET = "s3cr3t"

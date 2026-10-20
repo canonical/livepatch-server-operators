@@ -836,8 +836,8 @@ options:
     type: float
   otel-metrics.enabled:
     default: false
-    description: Whether to enable OpenTelemetry metrics export. This is a manual
-      toggle and is independent of any charm relation.
+    description: Whether or not to enable pushing OTLP metrics (requires the send-otlp
+      relation).
     type: boolean
   otel-metrics.service-name:
     default: livepatch-server

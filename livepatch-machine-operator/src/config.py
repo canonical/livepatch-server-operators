@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import ops
+
 from livepatch_common.config import (
     SECRET_FALLBACK_OPTIONS,
     SECRET_GROUPS,
@@ -40,6 +41,7 @@ OPT_SERVER_ADDRESS = "server.server-address"
 OPT_CONTRACTS_CA = "contracts.ca"
 OPT_PATCH_STORAGE_POSTGRES = "patch-storage.postgres-connection-string"
 OPT_PATCH_SYNC_ENABLED = "patch-sync.enabled"
+OPT_OTEL_METRICS_ENABLED = "otel-metrics.enabled"
 
 # Snap configuration keys the charm computes rather than passes through.
 KEY_IS_LEADER = "server.is-leader"
@@ -58,7 +60,6 @@ KEY_CONTRACTS_USER = "contracts.user"
 KEY_CONTRACTS_PASSWORD = "contracts.password"  # nosec B105
 KEY_AUTH_BASIC_ENABLED = "auth.basic.enabled"
 KEY_AUTH_BASIC_USERS = "auth.basic.users"
-
 
 
 class InvalidCharmConfigError(Exception):
@@ -90,9 +91,9 @@ def _get_secret_content(charm: Any, key: str, secret_id: str) -> Dict[str, Any]:
 
 
 def _resolve_secret_options(charm: Any, raw: Dict[str, Any]) -> None:
-    """Resolve preferred `type: secret` config options in-place, over their
-    deprecated plain-text counterparts.
+    """Resolve preferred `type: secret` config options in-place.
 
+    The preferred secrets override their deprecated plain-text counterparts.
     Standalone secrets (`SECRET_FALLBACK_OPTIONS`) overwrite the corresponding
     plain option's raw value when set; otherwise the plain option's existing
     raw value (already in `raw`) is left untouched. Credential-group secrets
@@ -162,6 +163,7 @@ class CharmConfig:
         patch_storage_postgres: the ``patch-storage.postgres-connection-string``
             option, which falls back to the database URI when empty.
         patch_sync_enabled: whether patch synchronisation is enabled.
+        otel_metrics_enabled: whether OTLP metrics export is enabled.
     """
 
     raw: Dict[str, Any]
@@ -172,6 +174,7 @@ class CharmConfig:
     has_invalid_contracts_ca: bool
     patch_storage_postgres: str
     patch_sync_enabled: bool
+    otel_metrics_enabled: bool
 
     @classmethod
     def from_charm(cls, charm: Any) -> "CharmConfig":
@@ -208,6 +211,7 @@ class CharmConfig:
             has_invalid_contracts_ca=has_invalid_contracts_ca,
             patch_storage_postgres=str(raw.get(OPT_PATCH_STORAGE_POSTGRES) or ""),
             patch_sync_enabled=raw.get(OPT_PATCH_SYNC_ENABLED) is True,
+            otel_metrics_enabled=raw.get(OPT_OTEL_METRICS_ENABLED) is True,
         )
 
     def to_snap_config(

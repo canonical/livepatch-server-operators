@@ -125,7 +125,7 @@ def _find_cloud(controller: str, cloud_types: Iterable[str], override: Optional[
         return override
 
     clouds = _controller_clouds(controller)
-    matches = [name for name, info in clouds.items() if info.get("type") in cloud_types]
+    matches = [name for name, info in clouds.items() if str(info.get("type")) in cloud_types]
     found = {name: info.get("type") for name, info in clouds.items()}
     assert matches, (
         f"controller {controller!r} has no cloud of type {tuple(cloud_types)} "

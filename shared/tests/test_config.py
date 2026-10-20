@@ -4,7 +4,6 @@
 from typing import Dict, Optional
 
 import pytest
-
 from livepatch_common.config import (
     SECRET_FALLBACK_OPTIONS,
     SECRET_GROUPS,
@@ -63,17 +62,13 @@ def test_resolve_returns_empty_when_no_secrets_set():
 
 
 def test_resolve_standalone_secret_overrides_plain_option():
-    resolved = resolve_secret_values(
-        _provider({"patch-sync.token-secret": {SECRET_VALUE_KEY: "s3cr3t"}})
-    )
+    resolved = resolve_secret_values(_provider({"patch-sync.token-secret": {SECRET_VALUE_KEY: "s3cr3t"}}))
     assert resolved == {"patch-sync.token": "s3cr3t"}
 
 
 def test_resolve_swift_temp_url_key_secret_overrides_plain_option():
     resolved = resolve_secret_values(
-        _provider(
-            {"patch-storage.swift-temp-url-key-secret": {SECRET_VALUE_KEY: "temp-url-key"}}
-        )
+        _provider({"patch-storage.swift-temp-url-key-secret": {SECRET_VALUE_KEY: "temp-url-key"}})
     )
     assert resolved == {"patch-storage.swift-temp-url-key": "temp-url-key"}
 
@@ -106,9 +101,7 @@ def test_resolve_group_secret_expands_all_sub_keys():
 
 
 def test_resolve_group_secret_only_expands_provided_sub_keys():
-    resolved = resolve_secret_values(
-        _provider({"patch-storage.s3-credentials-secret": {"access-key": "AK"}})
-    )
+    resolved = resolve_secret_values(_provider({"patch-storage.s3-credentials-secret": {"access-key": "AK"}}))
     assert resolved == {"patch-storage.s3-access-key": "AK"}
 
 

@@ -47,8 +47,8 @@ FAKE_URL_TEMPLATE = "http://livepatch:8080/v1/patches/{filename}"
 AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
 
 PRO_AIRGAPPED_MANUAL_SERVER_CONFIG = (
-    Path(__file__).parent / "data" / "pro-airgapped-manual-server-config.b64"
-).read_text().strip()
+    (Path(__file__).parent / "data" / "pro-airgapped-manual-server-config.b64").read_text().strip()
+)
 
 
 def _unit_name(status: jubilant.Status, app: str, unit: int | None) -> str:

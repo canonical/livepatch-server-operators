@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 # Keep in sync with requirements.txt (used by tox); charmcraft's uv plugin reads this.
 dependencies = [
     "cosl",
+    "email-validator>=2",
     "ops==3.8.2",
     "ops-lib-pgsql",
     "paas-charm>=1.0,<2",
