@@ -11,9 +11,9 @@ patterns are registered here.
 """
 
 from livepatch_common.log_redactor import (
+    _REDACTED,
     RedactingFilter,
     RedactingFormatter,
-    _REDACTED,
     _redact,
     _redact_if_str,
     register_sensitive_pattern,

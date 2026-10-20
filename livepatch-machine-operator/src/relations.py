@@ -13,13 +13,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional, Tuple
 
+from ops.model import ModelError, Relation
+
+from livepatch_common.relations import build_database_uri, cve_source_url
+from livepatch_common.relations import otlp_metrics_endpoint as otlp_endpoint_from_data
 from livepatch_common.relations import (
-    build_database_uri,
-    cve_source_url,
-    otlp_metrics_endpoint as otlp_endpoint_from_data,
     pro_airgapped_server_address as airgapped_address_from_data,
 )
-from ops.model import ModelError, Relation
 
 logger = logging.getLogger(__name__)
 

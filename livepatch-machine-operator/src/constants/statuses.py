@@ -7,6 +7,7 @@
 AWAIT_POSTGRES_RELATION = "Waiting for postgres relation to be established."
 AWAIT_POSTGRES_URI = "Waiting for postgres..."
 AWAIT_POSTGRES_PRIMARY = "Waiting for postgres to select primary node..."
+AWAIT_OTEL_METRICS_DATA = "Waiting for complete OTLP metrics relation data."
 SCHEMA_UPGRADE_FAILED = "Database schema upgrade failed, check logs."
 LIVEPATCH_RUNNING = "Livepatch server running!"
 LIVEPATCH_NOT_RUNNING = "Livepatch server is not running."
