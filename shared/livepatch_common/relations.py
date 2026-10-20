@@ -103,12 +103,22 @@ def _otlp_endpoint_from_list(endpoints: List[Any]) -> Optional[Tuple[str, str, b
     candidates = [
         item
         for item in endpoints
-        if isinstance(item, Mapping) and item.get("endpoint") and "metrics" in (item.get("telemetries") or [])
+        if isinstance(item, Mapping)
+        and item.get("endpoint")
+        and item.get("protocol")
+        and "metrics" in (item.get("telemetries") or [])
     ]
     if not candidates:
         return None
-    best = max(candidates, key=lambda item: _OTLP_PROTOCOL_PRIORITY.get(item.get("protocol"), 0))
-    return str(best["endpoint"]), str(best.get("protocol", "http")), bool(best.get("insecure", False))
+    best = max(
+        candidates,
+        key=lambda item: _OTLP_PROTOCOL_PRIORITY.get(str(item["protocol"]), 0),
+    )
+    return (
+        str(best["endpoint"]),
+        str(best["protocol"]),
+        bool(best.get("insecure", False)),
+    )
 
 
 def otlp_metrics_endpoint(data: Mapping[str, Any]) -> Optional[Tuple[str, str, bool]]:

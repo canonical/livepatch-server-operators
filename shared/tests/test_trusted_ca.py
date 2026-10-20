@@ -4,7 +4,6 @@
 from base64 import b64encode
 
 import pytest
-
 from livepatch_common.trusted_ca import TRUSTED_CA_FILENAME, decode_contracts_ca
 
 

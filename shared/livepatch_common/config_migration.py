@@ -173,7 +173,10 @@ def _settings(document: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _migration_result(
-    config_root: str, converted: Dict[str, Any], removed: List[str], unrecognized: List[str]
+    config_root: str,
+    converted: Dict[str, Any],
+    removed: List[str],
+    unrecognized: List[str],
 ) -> Dict[str, Any]:
     """Serialize migrated values and diagnostics using the destination app name."""
     return {
@@ -237,7 +240,11 @@ def handle_migration_action(
 
 
 def __map_legacy_config(
-    key: str, parsed_val: Any, unrecognized_keys: List[str], removed_keys: List[str], converted_options: Dict[str, Any]
+    key: str,
+    parsed_val: Any,
+    unrecognized_keys: List[str],
+    removed_keys: List[str],
+    converted_options: Dict[str, Any],
 ) -> None:
     """Migrate a legacy configuration key to the new format.
 

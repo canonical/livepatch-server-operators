@@ -3,7 +3,6 @@
 
 import pytest
 import yaml
-
 from livepatch_common import config_migration
 from livepatch_common.config_migration import build_migrated_config, migrate_config
 
@@ -84,7 +83,12 @@ def test_build_migrated_config_nests_under_config_root():
     import yaml
 
     result = build_migrated_config(
-        {"options": {"burst_limit": {"value": "100"}, "auth_lp_teams": {"value": "team"}}},
+        {
+            "options": {
+                "burst_limit": {"value": "100"},
+                "auth_lp_teams": {"value": "team"},
+            }
+        },
         config_root="my-charm",
     )
     assert yaml.safe_load(result["new-config"]) == {"my-charm": {"server.burst-limit": "100"}}

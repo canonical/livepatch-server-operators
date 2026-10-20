@@ -34,7 +34,10 @@ def get_proxy_dict(cfg) -> t.Optional[dict]:
 
 
 def get_machine_token(
-    contract_token: str, contracts_url=DEFAULT_CONTRACTS_URL, proxies=None, ca_certificate=None
+    contract_token: str,
+    contracts_url=DEFAULT_CONTRACTS_URL,
+    proxies=None,
+    ca_certificate=None,
 ) -> t.Optional[str]:
     """Retrieve a resource token for the livepatch-onprem resource."""
     if proxies is not None:
@@ -83,7 +86,12 @@ def get_machine_token(
             os.unlink(ca_tempfile.name)
 
 
-def get_resource_token(machine_token, contracts_url=DEFAULT_CONTRACTS_URL, proxies=None, ca_certificate=None):
+def get_resource_token(
+    machine_token,
+    contracts_url=DEFAULT_CONTRACTS_URL,
+    proxies=None,
+    ca_certificate=None,
+):
     """Retrieve a resource token for the livepatch-onprem resource."""
     if proxies is not None:
         os.environ["http_proxy"] = proxies.get("http_proxy", "")
