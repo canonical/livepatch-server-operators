@@ -7,6 +7,10 @@ charms:
   charmcraft-yaml: livepatch-k8s-operator/charmcraft.yaml
   platforms:
   - arch: amd64
+  # No rock: opcli publishes the image from the resource's upstream-source.
+  resources:
+    app-image:
+      type: oci-image
 - name: canonical-livepatch-server
   charmcraft-yaml: livepatch-machine-operator/charmcraft.yaml
   platforms:
