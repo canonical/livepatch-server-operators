@@ -35,6 +35,10 @@ jobs:
         working-directory: ${{ matrix.charm }}
         run: tox -e unit
 
+      - name: Run FlapLint
+        working-directory: ${{ matrix.charm }}
+        run: tox -e flaplint
+
   shared-unit-test:
     name: Unit tests (shared)
     runs-on: ubuntu-latest
