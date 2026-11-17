@@ -1,0 +1,36 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+name: Flaplint
+
+on:
+  pull_request:
+
+jobs:
+  flaplint:
+    name: Flaplint (${{ matrix.charm }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - charm: livepatch-machine-operator
+          - charm: livepatch-k8s-operator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tox
+        run: python -m pip install tox
+
+      - name: Sync shared sources
+        run: make sync
+
+      - name: Run flaplint
+        working-directory: ${{ matrix.charm }}
+        run: tox -e flaplint
