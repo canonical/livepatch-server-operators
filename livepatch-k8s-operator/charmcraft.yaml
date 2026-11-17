@@ -189,7 +189,7 @@ resources:
   app-image:
     type: oci-image
     description: go application image.
-    upstream-source: ghcr.io/canonical/livepatch-server:v2.7.1
+    upstream-source: ghcr.io/canonical/livepatch-server:v2.7.2
 config:
   options:
     ingress-interface:
