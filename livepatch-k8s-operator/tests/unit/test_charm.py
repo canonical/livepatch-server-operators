@@ -44,6 +44,19 @@ def test_config_changed_reaches_active_with_expected_env(context, base_state):
     assert env["LP_SERVER_IS_HOSTED"] == "false"
 
 
+
+def test_config_changed_adds_livepatch_readiness_check(context, base_state):
+    """The Pebble plan probes the server's debug endpoint once per minute."""
+    state_out = context.run(context.on.config_changed(), testing.State(**base_state))
+
+    check = state_out.get_container(APP_CONTAINER).plan.checks["livepatch-check"]
+    assert check.to_dict() == {
+        "override": "replace",
+        "period": "1m",
+        "http": {"url": "http://localhost:8080/debug/info"},
+    }
+
+
 def test_missing_postgresql_relation_blocks_without_crashing(context, base_state):
     """arrange: no `postgresql` relation (only the secret-storage peer).
     act: config-changed.
