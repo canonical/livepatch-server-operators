@@ -52,6 +52,7 @@ def test_config_changed_adds_livepatch_readiness_check(context, base_state):
     check = state_out.get_container(APP_CONTAINER).plan.checks["livepatch-check"]
     assert check.to_dict() == {
         "override": "replace",
+        "level": "ready",
         "period": "1m",
         "http": {"url": "http://localhost:8080/debug/info"},
     }

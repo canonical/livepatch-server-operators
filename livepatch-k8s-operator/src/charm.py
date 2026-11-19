@@ -321,6 +321,7 @@ class LivepatchApp(paas_charm.app.App):
         layer["checks"] = {
             "livepatch-check": {
                 "override": "replace",
+                "level": "ready",
                 "period": "1m",
                 "http": {"url": f"http://localhost:{self._workload_config.port}/debug/info"},
             }
