@@ -13,6 +13,7 @@ from charm import LEGACY_DB_SECRET_LABEL, RESOURCE_TOKEN_SECRET_LABEL, Livepatch
 
 from .conftest import (
     APP_CONTAINER,
+    APP_NAME,
     DEFAULT_LAYER,
     MAIN_DSN,
     METRICS_DSN,
@@ -44,17 +45,31 @@ def test_config_changed_reaches_active_with_expected_env(context, base_state):
     assert env["LP_SERVER_IS_HOSTED"] == "false"
 
 
-
 def test_config_changed_adds_livepatch_readiness_check(context, base_state):
-    """The Pebble plan probes the server's debug endpoint once per minute."""
+    """The Pebble plan preserves the go service and probes the server's debug endpoint."""
     state_out = context.run(context.on.config_changed(), testing.State(**base_state))
 
-    check = state_out.get_container(APP_CONTAINER).plan.checks["livepatch-check"]
-    assert check.to_dict() == {
-        "override": "replace",
-        "level": "ready",
-        "period": "1m",
-        "http": {"url": "http://localhost:8080/debug/info"},
+    plan = state_out.get_container(APP_CONTAINER).plan
+    env = plan.services[SERVICE_NAME].environment
+    assert env
+    assert plan.to_dict() == {
+        "services": {
+            SERVICE_NAME: {
+                "override": "replace",
+                "command": f"/usr/local/bin/{APP_NAME}",
+                "startup": "enabled",
+                "user": "_daemon_",
+                "environment": env,
+            }
+        },
+        "checks": {
+            "livepatch-check": {
+                "override": "replace",
+                "level": "ready",
+                "period": "1m",
+                "http": {"url": "http://localhost:8080/debug/info"},
+            }
+        },
     }
 
 
