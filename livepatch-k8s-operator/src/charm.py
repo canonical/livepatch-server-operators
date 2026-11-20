@@ -315,6 +315,19 @@ class LivepatchApp(paas_charm.app.App):
         env.update({k: v for k, v in lp_env.items() if v not in ("", None)})
         return env
 
+    def _app_layer(self) -> ops.pebble.LayerDict:
+        """Return the Pebble layer with the Livepatch HTTP readiness check."""
+        layer = super()._app_layer()
+        layer["checks"] = {
+            "livepatch-check": {
+                "override": "replace",
+                "level": "ready",
+                "period": "1m",
+                "http": {"url": f"http://localhost:{self._workload_config.port}/debug/info"},
+            }
+        }
+        return layer
+
 
 class LivepatchCharm(paas_charm.go.Charm):
     """Livepatch k8s charm entrypoint."""
