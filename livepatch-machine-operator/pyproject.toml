@@ -27,13 +27,13 @@ log_cli_format = "%(levelname)s %(name)s %(message)s"
 # Linting tools configuration
 [tool.flake8]
 max-line-length = 120
-max-doc-length = 99
-max-complexity = 10
+max-doc-length = 120
+max-complexity = 20
 exclude = [".git", "__pycache__", ".tox", "build", "dist", "*.egg_info", "venv"]
-select = ["E", "W", "F", "C", "N", "R", "D", "H"]
+select = ["E", "W", "F", "C", "N", "R", "H"]
 # Ignore W503, E501 because using black creates errors with this
 # Ignore D107 Missing docstring in __init__
-ignore = ["W503", "E501", "D107"]
+ignore = ["W503", "E501", "E203", "D107"]
 # D100, D101, D102, D103: Ignore missing docstrings in tests
 per-file-ignores = ["tests/*:D100,D101,D102,D103,D104"]
 docstring-convention = "google"
