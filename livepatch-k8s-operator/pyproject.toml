@@ -62,7 +62,7 @@ exclude = [".git", "__pycache__", ".tox", "build", "dist", "*.egg_info", "venv"]
 select = ["E", "W", "F", "C", "N", "R", "H"]
 # Ignore W503, E501 because using black creates errors with this
 # Ignore D107 Missing docstring in __init__
-ignore = ["W503", "E501", "D107", "E402"]
+ignore = ["W503", "E501", "E203", "D107", "E402"]
 per-file-ignores = []
 docstring-convention = "google"
 # Check for properly formatted copyright header in each file

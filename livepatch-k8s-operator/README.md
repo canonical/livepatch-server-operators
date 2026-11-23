@@ -18,6 +18,9 @@ The Livepatch server may be deployed using the Juju command line as follows:
 juju deploy canonical-livepatch-server-k8s
 ```
 
+The charm configures a Pebble HTTP readiness check that probes the Livepatch
+server's `/debug/info` endpoint once per minute.
+
 ## Integrations
 
 ### Database

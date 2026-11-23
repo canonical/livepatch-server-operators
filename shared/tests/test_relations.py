@@ -3,7 +3,6 @@
 
 import json
 
-import pytest
 from livepatch_common.relations import (
     build_database_uri,
     cve_source_url,
