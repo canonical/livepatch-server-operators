@@ -80,6 +80,7 @@ PRO_AIRGAPPED_SERVER_RELATION = "pro-airgapped-server"
 SEND_OTLP_RELATION = "send-otlp"
 DATABASE_LEGACY_RELATION = "database-legacy"
 DATABASE_LEGACY_NAME = "livepatch-server"
+SECRET_STORAGE_RELATION = "secret-storage"
 SCHEMA_TOOL_PATH = "/usr/local/bin/livepatch-schema-tool"
 OTEL_METRICS_ENABLED_OPTION = "otel-metrics.enabled"
 AWAIT_OTEL_METRICS_DATA = "Waiting for complete OTLP metrics relation data."
@@ -371,6 +372,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         self.framework.observe(self.on[CVE_CATALOG_RELATION].relation_broken, self._on_reconcile)
         self.framework.observe(self.on[SEND_OTLP_RELATION].relation_changed, self._on_reconcile)
         self.framework.observe(self.on[SEND_OTLP_RELATION].relation_broken, self._on_reconcile)
+        self.framework.observe(self.on.leader_elected, self._on_reconcile)
 
         self.framework.observe(self.on.get_resource_token_action, self._on_get_resource_token)
         self.framework.observe(self.on.schema_upgrade_action, self._on_schema_upgrade)
@@ -385,6 +387,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         Args:
             rerun_migrations: whether it is necessary to run the migrations again.
         """
+        self._ensure_secret_storage_initialized()
         if self._container.can_connect():
             try:
                 self._update_trusted_ca_certs(self._container)
@@ -397,6 +400,25 @@ class LivepatchCharm(paas_charm.go.Charm):
             self.update_app_and_unit_status(ops.MaintenanceStatus(AWAIT_OTEL_METRICS_DATA))
             return
         super().restart(rerun_migrations=rerun_migrations)
+
+    def _ensure_secret_storage_initialized(self) -> None:
+        """Generate any missing secret-storage key on the leader, keeping existing ones.
+
+        paas-charm only does this on secret-storage-relation-created. When refreshing
+        from the pre-12-factor charm, Juju consumes that hook while the old charm (which
+        lacks the endpoint) is still running and never replays it for the new charm.
+        This is only an issue when refreshing from the pre-12-factor charm to the new charm, however
+        this issue prevents refreshing the charm without downtime. 
+        """
+        if not self.unit.is_leader() or self._secret_storage.is_initialized:
+            return
+        relation = self.model.get_relation(SECRET_STORAGE_RELATION)
+        if relation is None:
+            return
+        app_data = relation.data[self.app]
+        for key, value in self._secret_storage.gen_initial_value().items():
+            if not app_data.get(key):
+                app_data[key] = value
 
     def _create_app(self) -> paas_charm.app.App:
         """Build the App instance used to configure the Pebble service.
