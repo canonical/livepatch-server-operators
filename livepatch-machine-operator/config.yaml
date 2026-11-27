@@ -23,20 +23,23 @@ options:
     type: string
   server.concurrency-limit:
     default: 1000
-    description: Maximum number of API requests being served concurrently.
+    description: |
+      Maximum number of API requests processed concurrently.
+
+      Set to 0 to disable request limiting.
     type: int
   server.burst-limit:
     default: 500
     description: |
-      The maximum number of concurrently incoming requests.
+      Maximum number of API requests being processed or queued.
 
-      After this limit, requests are queued according to the following:
-      concurrency-limit - burst-limit
+      Only takes effect when greater than concurrency-limit. Up to
+      burst-limit - concurrency-limit requests are then queued, each for at
+      most 10 seconds, before being rejected with HTTP 503.
 
-      For defaults, this is:
-      1000 - 500 = 500 (Maximum queue).
-
-      Once the queue is reached, subsequent requests are rejected.
+      When burst-limit is less than or equal to concurrency-limit, there is
+      no queue and requests over concurrency-limit are rejected immediately.
+      The defaults (1000 and 500) therefore allow no queue.
     type: int
   server.redirect-downloads:
     default: False

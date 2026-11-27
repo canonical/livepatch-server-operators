@@ -39,7 +39,7 @@ As an example, users can integrate this endpoint by using Juju as follows:
 
 ```sh
 juju deploy haproxy
-juju integrate canonical-livepatch-server:website haproxy:website
+juju integrate canonical-livepatch-server:website haproxy:reverseproxy
 ```
 
 ### Air-gapped Contracts
