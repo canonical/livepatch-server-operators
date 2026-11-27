@@ -408,7 +408,7 @@ class LivepatchCharm(paas_charm.go.Charm):
         from the pre-12-factor charm, Juju consumes that hook while the old charm (which
         lacks the endpoint) is still running and never replays it for the new charm.
         This is only an issue when refreshing from the pre-12-factor charm to the new charm, however
-        this issue prevents refreshing the charm without downtime. 
+        this issue prevents refreshing the charm without downtime.
         """
         if not self.unit.is_leader() or self._secret_storage.is_initialized:
             return
